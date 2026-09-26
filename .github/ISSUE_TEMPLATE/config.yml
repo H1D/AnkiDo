@@ -1,0 +1,8 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Security vulnerability
+    url: https://github.com/H1D/AnkiDo/security/advisories/new
+    about: Report privately. Do not open a public issue for security problems.
+  - name: Documentation
+    url: https://github.com/H1D/AnkiDo/tree/main/docs
+    about: Quickstart, API reference, client guide, deployment, schema-upgrade policy, migration.

@@ -1,0 +1,80 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  checks:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+        with:
+          enable-cache: true
+      - run: uv python install 3.12
+      - run: uv sync --locked
+      - run: uv run ruff check .
+      - run: uv run ruff format --check .
+      - run: uv run pyright
+      - run: uv run pytest --cov=ankido --cov-report=xml --cov-report=term -q -p no:cacheprovider
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: coverage
+          path: coverage.xml
+
+  e2e:
+    # Runs only where the throwaway AnkiWeb account secrets exist (never on forks).
+    if: github.event_name == 'push' && github.repository == 'H1D/AnkiDo'
+    runs-on: ubuntu-latest
+    needs: checks
+    concurrency: e2e-ankiweb
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+      - run: uv python install 3.12
+      - run: uv sync --locked
+      - name: Run end-to-end against AnkiWeb
+        env:
+          E2E_USERNAME: ${{ secrets.ANKIWEB_E2E_USERNAME }}
+          E2E_PASSWORD: ${{ secrets.ANKIWEB_E2E_PASSWORD }}
+        run: |
+          if [ -z "$E2E_USERNAME" ]; then echo "no e2e secrets; skipping"; exit 0; fi
+          umask 077
+          printf 'ANKIWEB_USERNAME=%s\nANKIWEB_PASSWORD=%s\n' "$E2E_USERNAME" "$E2E_PASSWORD" > "$RUNNER_TEMP/e2e.env"
+          ANKIDO_E2E_ENV="$RUNNER_TEMP/e2e.env" uv run pytest tests/test_e2e.py -q -p no:cacheprovider
+
+  image:
+    runs-on: ubuntu-latest
+    needs: checks
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/setup-buildx-action@v3
+      - name: Build (amd64 only, no push)
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          push: false
+          load: true
+          tags: ankido:ci
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+      - name: Smoke the image
+        run: |
+          mkdir -p /tmp/cfg /tmp/data && chmod 777 /tmp/data
+          cat > /tmp/cfg/ankido.yaml <<'EOF'
+          profiles:
+            alice: { collection: /data/alice/collection.anki2, autosync: "off" }
+          EOF
+          docker run -d --name ankido -p 127.0.0.1:8765:8765 -v /tmp/cfg:/config:ro -v /tmp/data:/data ankido:ci
+          for i in $(seq 1 30); do curl -fsS http://127.0.0.1:8765/healthz && break; sleep 1; done
+          curl -fsS http://127.0.0.1:8765/healthz
+          docker exec ankido ankido token create --profile alice --scopes read --name ci
+          test "$(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:8765/v1/p/alice/decks)" = "401"
+          docker logs ankido | tail -5
+          docker rm -f ankido

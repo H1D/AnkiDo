@@ -1,0 +1,112 @@
+# Ankido configuration example.
+#
+# Copy to /config/ankido.yaml (Docker) or ./ankido.yaml (bare metal), or point ANKIDO_CONFIG /
+# --config at it. Unknown keys anywhere are an error. Nothing secret belongs in this file:
+# AnkiWeb credentials come from the per-profile `credentials` file or from the environment
+# (ANKIDO_PROFILE_<NAME>_USERNAME / ANKIDO_PROFILE_<NAME>_PASSWORD).
+#
+# Every value below is the default unless the comment says otherwise. Run `ankido check-config`
+# after editing.
+
+# Root for service state: ankido.db (tokens, idempotency journal, audit log) plus one directory
+# per profile holding backups/ and sync.key. Must be writable by the service user (uid 1000 in
+# the container).
+data_dir: /data
+
+server:
+  # Listen address. Keep 127.0.0.1 on bare metal and put a TLS proxy in front. The Docker image
+  # runs `serve --bind 0.0.0.0`, which overrides this, and compose.yaml publishes the port on
+  # the host loopback only.
+  bind: 127.0.0.1
+  port: 8765
+
+  # Peer addresses (exact) whose X-Forwarded-For / CF-Connecting-IP headers are trusted for the
+  # `client` field in request logs. Affects logging only.
+  trusted_proxies: []
+  # e.g. ["127.0.0.1"] with a proxy on the same host, or the compose network gateway in Docker.
+
+  # Browser origins allowed to call the API. Empty disables CORS entirely.
+  cors_origins: []
+  # e.g. ["chrome-extension://<yomitan-id>", "https://reader.example.com"]
+
+  # Requests with a larger Content-Length are rejected with 413. Minimum 1024.
+  max_body_bytes: 16777216
+
+  # How long a request waits for the profile worker before 503 profile_busy. Syncs wait up to
+  # 600 s and backups up to 300 s regardless of this value.
+  operation_timeout_seconds: 30.0
+
+  # Close an open collection after this much inactivity (frees memory). 0 keeps it open.
+  idle_close_seconds: 600.0
+
+  # Token buckets, applied once per token and once per profile. per_minute is the sustained
+  # rate, burst the instantaneous allowance. Exceeding either yields 429 with Retry-After.
+  rate_limits:
+    read:  { per_minute: 600, burst: 120 }   # queue, stats, decks, media, sync/status, shim reads
+    write: { per_minute: 120, burst: 40 }    # notes, reviews, exchange, shim writes
+    sync:  { per_minute: 6,   burst: 3 }     # POST sync
+
+  # Python log level for the JSON log on stdout: DEBUG, INFO, WARNING, ERROR.
+  log_level: INFO
+
+media:
+  # Hostnames from which `url` attachments may be fetched. "*.example.com" matches subdomains and
+  # the bare domain. IP literals are never allowed and redirects are not followed. Empty means
+  # `url` attachments are refused. Not a default: fill in what you need or leave empty.
+  url_allowlist: []
+  # e.g. ["*.wiktionary.org", "cdn.example.com"]
+
+  # Maximum size of one attachment from any source.
+  max_bytes: 8388608
+
+  # HTTP timeout for `url` fetches.
+  fetch_timeout_seconds: 15.0
+
+  # Absolute directories under which `path` attachments must live. Empty refuses `path`.
+  path_allowlist: []
+  # e.g. ["/data/inbox"]
+
+# One entry per AnkiWeb account. Names: lowercase letters, digits, '-' and '_', up to 32
+# characters, starting with a letter or digit. The name appears in every URL.
+profiles:
+
+  # A profile used by devices that grade cards all day: sync shortly after each write.
+  alice:
+    # Path of the collection file. Created on first open if missing (the first sync then
+    # downloads the account's collection). Media is stored in the sibling collection.media/
+    # directory. Do not point this at a file another program opens.
+    collection: /data/alice/collection.anki2
+
+    # Env file with ANKIWEB_USERNAME and ANKIWEB_PASSWORD. Must be mode 0600 (or 0400) and
+    # readable by the service user. With Docker secrets it lands under /run/secrets/. Omit it
+    # (and the environment variables) for a local-only profile without sync.
+    credentials: /run/secrets/alice.env
+
+    # after_write: sync `after_write_debounce_seconds` after the last successful write.
+    # nightly: once a day at `nightly_at`. off: only when POST /sync is called.
+    autosync: after_write
+    after_write_debounce_seconds: 30.0
+    nightly_at: "03:30"
+
+    # Permit opening a collection whose schema is older than the library's. Read
+    # docs/schema-upgrade.md first. A backup is taken before the upgrade.
+    allow_schema_upgrade: false
+
+    # Custom sync server URL (self-hosted sync server). null means AnkiWeb.
+    sync_endpoint: null
+
+    # Sync media files as well as the collection.
+    media_sync: true
+
+    # Backups per profile to keep; older ones are deleted after each new backup.
+    backups:
+      keep: 10
+
+  # A profile that is mostly written by a batch job: sync once a night, keep more backups.
+  bob:
+    collection: /data/bob/collection.anki2
+    credentials: /run/secrets/bob.env
+    autosync: nightly
+    nightly_at: "04:15"     # container local time; set TZ accordingly
+    backups:
+      keep: 20

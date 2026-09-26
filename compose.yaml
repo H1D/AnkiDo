@@ -1,0 +1,34 @@
+# Ankido — docker compose example.
+#
+#   mkdir -p config data secrets
+#   cp ankido.example.yaml config/ankido.yaml      # edit profiles
+#   printf 'ANKIWEB_USERNAME=you@example.com\nANKIWEB_PASSWORD=...\n' > secrets/alice.env
+#   chmod 600 secrets/alice.env
+#   docker compose up -d
+#   docker compose exec ankido ankido token create --profile alice --scopes read,review --name phone
+#
+# The port is published on 127.0.0.1 only. Put a TLS reverse proxy in front for anything else.
+
+services:
+  ankido:
+    image: ghcr.io/h1d/ankido:0.1
+    # build: .
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:8765:8765"
+    volumes:
+      - ./config:/config:ro
+      - ./data:/data
+    secrets:
+      - alice.env
+    environment:
+      TZ: UTC   # set your zone: Anki's day rollover follows it
+    read_only: true
+    tmpfs:
+      - /tmp
+    security_opt:
+      - no-new-privileges:true
+
+secrets:
+  alice.env:
+    file: ./secrets/alice.env

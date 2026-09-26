@@ -1,0 +1,16 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128" role="img" aria-labelledby="t">
+  <title id="t">AnkiDo — way of cards</title>
+  <!-- ensō: open brush circle, the "way" -->
+  <g fill="none" stroke="#1f1a17" stroke-linecap="round">
+    <circle cx="64" cy="64" r="50" stroke-width="9" stroke-dasharray="270 44" transform="rotate(-18 64 64)"/>
+  </g>
+  <!-- back card -->
+  <rect x="40" y="34" width="40" height="56" rx="6" fill="#f4ecdf" stroke="#1f1a17" stroke-width="3" transform="rotate(-14 60 62)"/>
+  <!-- front card: vermilion, like a hanko seal -->
+  <g transform="rotate(8 68 66)">
+    <rect x="48" y="38" width="40" height="56" rx="6" fill="#c8372d" stroke="#1f1a17" stroke-width="3"/>
+    <!-- the path across the card -->
+    <path d="M56 85 C 58 70, 78 72, 80 48" fill="none" stroke="#f4ecdf" stroke-width="4" stroke-linecap="round"/>
+    <circle cx="80" cy="47" r="3.5" fill="#f4ecdf"/>
+  </g>
+</svg>

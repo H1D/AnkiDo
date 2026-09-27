@@ -203,7 +203,7 @@ ignored. Nothing secret goes in the file.
 | --- | --- | --- |
 | `bind` | `127.0.0.1` | Address to listen on. Keep the default on bare metal. The Docker image passes `--bind 0.0.0.0` on its command line, which takes precedence, so the container is reachable on the published port. |
 | `port` | `8765` | TCP port, 1 to 65535. |
-| `trusted_proxies` | `[]` | Peer addresses whose `X-Forwarded-For` / `CF-Connecting-IP` headers are believed. Used for the `client` field in request logs and passed to uvicorn's proxy-header handling. Exact addresses. |
+| `trusted_proxies` | `[]` | Peer addresses whose `X-Forwarded-For` / `CF-Connecting-IP` / `X-Forwarded-Host` headers are believed. Used for the `client` field in request logs, the per-address OAuth rate limit and the `public_url` host check (with `X-Forwarded-Proto`). Exact addresses or CIDR ranges. |
 | `cors_origins` | `[]` | Browser origins allowed to call the API. Empty disables CORS entirely. When set, methods `GET`, `POST`, `OPTIONS` and headers `Authorization`, `Content-Type`, `If-None-Match` are allowed and `ETag` is exposed. |
 | `max_body_bytes` | `16777216` (16 MiB) | Requests with a larger `Content-Length` are rejected with `413 payload_too_large`. Minimum 1024. |
 | `operation_timeout_seconds` | `30` | How long a request waits for the profile worker before failing with `503 profile_busy`. Sync waits up to 600 s, backup up to 300 s regardless. |
@@ -211,10 +211,13 @@ ignored. Nothing secret goes in the file.
 | `rate_limits.read` | `{per_minute: 600, burst: 120}` | Token bucket for read operations. |
 | `rate_limits.write` | `{per_minute: 120, burst: 40}` | Token bucket for notes, reviews, exchange and shim writes. |
 | `rate_limits.sync` | `{per_minute: 6, burst: 3}` | Token bucket for sync requests. |
+| `rate_limits.oauth` | `{per_minute: 20, burst: 10}` | Token bucket for the OAuth consent form, registration and token endpoints, per client address. |
 | `log_level` | `INFO` | Python log level name. |
+| `public_url` | `null` | External https origin (no path), e.g. `https://anki.example.com`. Needed only for MCP OAuth, i.e. claude.ai connectors; see [mcp.md](mcp.md#oauth). |
 
-Each bucket applies twice: once per token and once per profile. Whichever is exhausted first
-produces `429 rate_limited` with a `Retry-After` header.
+Each of `read`, `write` and `sync` applies twice: once per token and once per profile. Whichever
+is exhausted first produces `429 rate_limited` with a `Retry-After` header. MCP tool calls use
+the same buckets as the matching `/v1` endpoints.
 
 ### `media`
 

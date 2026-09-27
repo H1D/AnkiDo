@@ -34,7 +34,7 @@ from anki.scheduler.v3 import Scheduler
 from anki.scheduler_pb2 import CardAnswer, QueuedCards
 
 from ankido.collection.media import MediaResolver
-from ankido.collection.render import normalize_headword, render
+from ankido.collection.render import html_to_text, normalize_headword, render
 from ankido.collection.session import Session
 from ankido.errors import ApiError, NotFound
 from ankido.store import Store
@@ -634,6 +634,76 @@ def get_decks(session: Session) -> list[dict[str, Any]]:
             }
         )
     return out
+
+
+def get_models(session: Session) -> list[dict[str, Any]]:
+    """Note types with their field names (first field = dedupe key) and card template names."""
+    col = session.require()
+    out: list[dict[str, Any]] = []
+    for entry in col.models.all_names_and_ids():
+        notetype = col.models.get(entry.id)  # pyright: ignore[reportArgumentType]
+        if notetype is None:
+            continue
+        out.append(
+            {
+                "id": int(entry.id),
+                "name": entry.name,
+                "fields": col.models.field_names(notetype),
+                "templates": [t["name"] for t in notetype["tmpls"]],
+                "cloze": notetype["type"] == 1,
+            }
+        )
+    return out
+
+
+DEFAULT_SEARCH_LIMIT = 50
+MAX_SEARCH_LIMIT = 500
+
+
+def search_notes(
+    session: Session,
+    query: str,
+    *,
+    limit: int = DEFAULT_SEARCH_LIMIT,
+    offset: int = 0,
+    render_mode: Literal["text", "html"] = "text",
+) -> dict[str, Any]:
+    """Anki search syntax over notes, newest first. Read-only."""
+    col = session.require()
+    ids = sorted(find_notes(col, query), reverse=True)
+    limit = max(1, min(limit, MAX_SEARCH_LIMIT))
+    page = ids[offset : offset + limit]
+    notes: list[dict[str, Any]] = []
+    for nid in page:
+        note = col.get_note(NoteId(nid))
+        notetype = note.note_type()
+        assert notetype is not None
+        card_ids = [int(c) for c in note.card_ids()]
+        decks = list(
+            dict.fromkeys(
+                col.decks.name(col.get_card(CardId(c)).current_deck_id()) for c in card_ids
+            )
+        )
+        fields = {name: note[name] for name in col.models.field_names(notetype)}
+        if render_mode == "text":
+            fields = {k: html_to_text(v, markup=False).strip() for k, v in fields.items()}
+        notes.append(
+            {
+                "note_id": note.id,
+                "model": notetype["name"],
+                "decks": decks,
+                "fields": fields,
+                "tags": list(note.tags),
+                "card_ids": card_ids,
+                "mod": note.mod,
+            }
+        )
+    end = offset + len(page)
+    return {
+        "notes": notes,
+        "total": len(ids),
+        "next_offset": end if end < len(ids) else None,
+    }
 
 
 def profile_status(session: Session) -> dict[str, Any]:

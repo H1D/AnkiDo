@@ -96,10 +96,24 @@ With a tunnel, no inbound port is open at all. `cloudflared` runs next to Ankido
    `CF-Connecting-IP`, and falls back to `X-Forwarded-For`, for the `client` field in the request
    log.
 
-`trusted_proxies` affects logging only. Rate limits are per token and per profile, not per
-address, so a wrong value cannot let anyone bypass them; it can only make the log show the proxy's
-address instead of the client's. Entries are exact addresses; they are also handed to uvicorn's
-proxy-header handling.
+`trusted_proxies` mostly affects logging. Rate limits on the API are per token and per profile,
+not per address, so a wrong value cannot let anyone bypass them. Two things do use the address:
+the OAuth consent, registration and token endpoints are rate-limited per client address, and
+the [`public_url`](mcp.md#oauth) host check reads `X-Forwarded-Host` from trusted proxies.
+Entries are exact addresses or CIDR ranges. Ankido reads the forwarded headers itself
+(`X-Forwarded-For`, `CF-Connecting-IP`, `X-Forwarded-Host`, `X-Forwarded-Proto`), only from
+those peers; uvicorn's own proxy-header rewriting is off.
+
+## MCP and claude.ai
+
+Nothing extra is needed for MCP clients that send a static token. For claude.ai connectors
+(OAuth), set `server.public_url` to the https origin of the proxy and make sure the proxy
+forwards the original `Host` header: Caddy does, nginx needs the `proxy_set_header Host $host`
+line above, and Cloudflare Tunnel does. claude.ai connects from Anthropic's cloud, so this only
+works on a publicly reachable hostname. Behind Cloudflare Access, bypass Access for the paths
+claude.ai calls from its servers: `/mcp/*`, `/.well-known/*`, `/oauth/token`, `/oauth/register`
+and `/oauth/revoke`. The consent page, `/oauth/authorize`, opens in your own browser and can stay
+behind Access. Details in [mcp.md](mcp.md).
 
 ## CORS for browser clients
 

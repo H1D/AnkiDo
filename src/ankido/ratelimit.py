@@ -37,10 +37,17 @@ class RateLimiter:
         self._lock = threading.Lock()
 
     def check(self, *, token_id: str, profile: str, klass: str) -> None:
+        self._take(klass, f"t:{token_id}", f"p:{profile}")
+
+    def check_key(self, key: str, *, klass: str) -> None:
+        """One bucket for an arbitrary key (e.g. a client IP on unauthenticated endpoints)."""
+        self._take(klass, f"k:{key}")
+
+    def _take(self, klass: str, *names: str) -> None:
         limit = getattr(self._limits, klass)
         with self._lock:
             wait = 0.0
-            for key in ((f"t:{token_id}", klass), (f"p:{profile}", klass)):
+            for key in ((name, klass) for name in names):
                 bucket = self._buckets.get(key)
                 if bucket is None:
                     bucket = self._buckets[key] = _Bucket(limit)

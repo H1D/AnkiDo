@@ -149,6 +149,23 @@ The README should state plainly why it is not the primary surface: no idempotenc
 no ETag/`304`, no cursor or `Range`, `cardsInfo` returns everything at once, and markup cleanup is
 left to the client.
 
+### 6.3 `/mcp/p/{profile}` — MCP for LLM agents (added in 0.2)
+
+- The same operations as `/v1`, exposed as MCP tools: `list_decks`, `list_note_types`,
+  `search_notes`, `get_stats`, `get_queue`, `sync_status`, `add_notes`, `submit_reviews`, `sync`,
+  plus a `review_session` prompt. Parity rule: every tool maps to a `/v1` endpoint and runs the
+  same code; anything new lands in `/v1` first (hence `GET models` and `GET notes?query=`).
+- Streamable HTTP, stateless, protocol 2026-07-28, with the legacy `initialize` handshake still
+  accepted (statelessly) for older clients. Embedded in the same app, on the profile's worker.
+- Auth: static tokens as everywhere else, or OAuth for clients that can only sign in (claude.ai).
+  Ankido is its own minimal authorization server: Client ID Metadata Documents and Dynamic
+  Client Registration, PKCE S256, a consent page where the owner pastes an existing token, grants
+  capped at that token's scopes (never `admin`), audience-bound to one MCP URL, 1 h access and
+  90-day rotating refresh tokens, revoked together with the pasted token. OAuth needs
+  `server.public_url`; without it the endpoints explain what to configure.
+- The tool list is filtered by the caller's scopes and every call is checked again; `path`
+  media is not accepted over MCP.
+
 ## 7. Security
 
 - **Tokens**: several per profile, scopes `read`, `add`, `review`, `sync`, `admin`. Store only the
@@ -189,7 +206,8 @@ left to the client.
 
 ## 9. Out of scope
 
-A GUI or web interface; a custom scheduler or a reimplementation of FSRS; scraping AnkiWeb's private
+A GUI or web interface (one exception since 0.2: the plain-HTML OAuth consent page for MCP
+clients, §6.3); a custom scheduler or a reimplementation of FSRS; scraping AnkiWeb's private
 web endpoints (verified not viable); generating translations, TTS, or sourcing audio (callers do that);
 mobile apps; running this as a hosted service.
 
@@ -198,5 +216,6 @@ mobile apps; running this as a hosted service.
 1. License: MIT (widest reach) or AGPL (protects against closed SaaS wrappers). Note that the `anki`
    library itself is AGPL, so the choice is largely made for us — confirm the legal reading and state
    it in the README.
-2. Does the MCP mode ship in v1 (the base project has one) or slip to v1.1?
+2. Does the MCP mode ship in v1 (the base project has one) or slip to v1.1? *Decided: it ships
+   in 0.2.0, always on, as described in §6.3.*
 3. Claim the name on PyPI, Docker Hub, and GHCR before the first release.

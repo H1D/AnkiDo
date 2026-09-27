@@ -215,3 +215,61 @@ def test_full_sync_is_never_implicit(e2e: dict[str, Any]) -> None:
     r = e2e["client"].post("/v1/p/main/sync", headers=e2e["h"], json={"force_full": "upload"})
     assert r.status_code == 400
     assert r.json()["error"]["code"] == "confirmation_required"
+
+
+def _mcp(e2e: dict[str, Any], tool: str, arguments: dict[str, Any]) -> Any:
+    """One stateless MCP tools/call, the way a plain HTTP client would send it."""
+    r = e2e["client"].post(
+        "/mcp/p/main",
+        headers={
+            **e2e["h"],
+            "Accept": "application/json, text/event-stream",
+            "MCP-Protocol-Version": "2025-06-18",
+        },
+        json={
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "tools/call",
+            "params": {"name": tool, "arguments": arguments},
+        },
+    )
+    assert r.status_code == 200, (tool, r.status_code, r.text)
+    result = r.json()["result"]
+    assert not result.get("isError"), (tool, result)
+    return result["structuredContent"]
+
+
+def test_mcp_add_sync_review(e2e: dict[str, Any]) -> None:
+    run = uuid.uuid4().hex[:8]
+    tag = f"ankido-e2e-mcp-{run}"
+    added = _mcp(
+        e2e,
+        "add_notes",
+        {
+            "deck": DECK,
+            "tags": [tag],
+            "notes": [{"client_id": f"mcp-{run}", "fields": {"Front": f"mcp {run}", "Back": "b"}}],
+        },
+    )["results"]
+    assert added[0]["status"] == "added", added
+    card_id = added[0]["card_ids"][0]
+
+    synced = _mcp(e2e, "sync", {})
+    assert synced["outcome"] in ("merged", "no_changes"), synced
+
+    queue = _mcp(e2e, "get_queue", {"decks": [DECK], "limit": 50})
+    card = next(c for c in queue["cards"] if c["card_id"] == card_id)
+    assert card["q"] == f"mcp {run}"
+
+    graded = _mcp(
+        e2e,
+        "submit_reviews",
+        {"reviews": [{"card_id": card_id, "ease": 3, "client_id": f"mcp-{run}-r"}]},
+    )["results"]
+    assert graded[0]["status"] == "applied", graded
+    assert _mcp(e2e, "sync", {})["outcome"] == "merged"
+
+    found = _mcp(e2e, "search_notes", {"query": f"tag:{tag}"})
+    assert found["total"] == 1
+    _shim(e2e, "main", "deleteNotes", {"notes": [found["notes"][0]["note_id"]]})
+    assert _post(e2e, "/v1/p/main/sync")["outcome"] == "merged"

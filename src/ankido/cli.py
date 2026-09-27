@@ -117,8 +117,9 @@ def _serve(args: argparse.Namespace, config: Config) -> int:
         log_config=None,
         access_log=False,
         server_header=False,
-        proxy_headers=bool(config.server.trusted_proxies),
-        forwarded_allow_ips=",".join(config.server.trusted_proxies) or None,
+        # Forwarded headers are interpreted by Ankido itself (server.trusted_proxies), against
+        # the real peer address; uvicorn rewriting the peer first would hide it.
+        proxy_headers=False,
     )
     return 0
 

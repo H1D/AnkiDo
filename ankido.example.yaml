@@ -20,8 +20,9 @@ server:
   bind: 127.0.0.1
   port: 8765
 
-  # Peer addresses (exact) whose X-Forwarded-For / CF-Connecting-IP headers are trusted for the
-  # `client` field in request logs. Affects logging only.
+  # Peer addresses (exact, or CIDR ranges) whose X-Forwarded-For / CF-Connecting-IP /
+  # X-Forwarded-Host headers are trusted: for the `client` field in request logs, the
+  # per-address OAuth rate limit, and the public_url host check below.
   trusted_proxies: []
   # e.g. ["127.0.0.1"] with a proxy on the same host, or the compose network gateway in Docker.
 
@@ -45,9 +46,16 @@ server:
     read:  { per_minute: 600, burst: 120 }   # queue, stats, decks, media, sync/status, shim reads
     write: { per_minute: 120, burst: 40 }    # notes, reviews, exchange, shim writes
     sync:  { per_minute: 6,   burst: 3 }     # POST sync
+    oauth: { per_minute: 20,  burst: 10 }    # OAuth consent/register/token, per client address
 
   # Python log level for the JSON log on stdout: DEBUG, INFO, WARNING, ERROR.
   log_level: INFO
+
+  # The https origin clients reach this service at, without a path. Needed only for MCP OAuth
+  # (claude.ai / Claude Desktop custom connectors); MCP with a static token works without it.
+  # See docs/mcp.md. Not a default: null leaves OAuth off.
+  public_url: null
+  # e.g. https://anki.example.com
 
 media:
   # Hostnames from which `url` attachments may be fetched. "*.example.com" matches subdomains and

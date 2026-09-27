@@ -7,7 +7,8 @@ engine: `addNote` runs the same code as `POST /v1/p/{profile}/notes`, `answerCar
 `POST /v1/p/{profile}/reviews`.
 
 It is a compatibility surface. It gets bug fixes, not new features. New clients should use `/v1`
-([api.md](api.md)).
+([api.md](api.md)); agents are better served by Ankido's own MCP endpoint ([mcp.md](mcp.md))
+than by an AnkiConnect-oriented MCP server pointed at this shim.
 
 ## Request and response
 

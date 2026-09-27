@@ -1,6 +1,6 @@
 [project]
 name = "ankido"
-version = "0.1.0"
+version = "0.2.0"
 description = "Headless, multi-account HTTP API for AnkiWeb collections."
 readme = "README.md"
 license = "AGPL-3.0-or-later"
@@ -22,6 +22,7 @@ dependencies = [
   "argon2-cffi>=23.1",
   "fastapi>=0.115",
   "httpx>=0.27",
+  "mcp>=2.2,<3",
   "pydantic>=2.9",
   "pyyaml>=6.0",
   "uvicorn[standard]>=0.30",

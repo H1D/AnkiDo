@@ -16,6 +16,7 @@ from ankido.api.deps import Principal, authorize, authorize_admin, supervisor_of
 from ankido.api.schemas import (
     ExchangeRequest,
     NotesRequest,
+    ReviewIn,
     ReviewsRequest,
     SyncRequest,
     WantIn,
@@ -24,6 +25,7 @@ from ankido.collection import ops
 from ankido.collection.media import content_type_for
 from ankido.collection.session import Session
 from ankido.errors import ApiError, NotFound
+from ankido.supervisor import Supervisor
 from ankido.worker import PRIORITY_READ, PRIORITY_SYNC, PRIORITY_WRITE
 
 router = APIRouter(prefix="/v1")
@@ -39,9 +41,16 @@ def _etag_response(request: Request, payload: dict[str, Any], *, max_age: int = 
     return Response(content=body, media_type="application/json", headers=headers)
 
 
-def _audit(request: Request, p: Principal, action: str, outcome: str, count: int = 0) -> None:
-    supervisor_of(request).store.audit(
-        token_id=p.token.id, profile=p.profile, action=action, outcome=outcome, count=count
+def audit(
+    sup: Supervisor, p: Principal, action: str, outcome: str, count: int = 0, *, via: str | None
+) -> None:
+    sup.store.audit(
+        token_id=p.token.id,
+        profile=p.profile,
+        action=action,
+        outcome=outcome,
+        count=count,
+        detail=f"via={via}" if via else None,
     )
 
 
@@ -51,7 +60,13 @@ def _audit(request: Request, p: Principal, action: str, outcome: str, count: int
 @router.post("/p/{profile}/notes")
 def post_notes(profile: str, body: NotesRequest, request: Request) -> dict[str, Any]:
     p = authorize(request, profile, "add", klass="write")
-    sup = supervisor_of(request)
+    return {"results": add_notes(supervisor_of(request), p, body, via=None)}
+
+
+def add_notes(
+    sup: Supervisor, p: Principal, body: NotesRequest, *, via: str | None
+) -> list[dict[str, Any]]:
+    """``POST notes`` minus HTTP; the MCP ``add_notes`` tool runs this too."""
     req = ops.AddNotesRequest(
         deck=body.deck,
         model=body.model,
@@ -78,15 +93,21 @@ def post_notes(profile: str, body: NotesRequest, request: Request) -> dict[str, 
     changed = sum(r["status"] in ("added", "updated") for r in results)
     if changed:
         p.worker.note_write()
-    _audit(request, p, "notes", "ok", len(results))
-    return {"results": results}
+    audit(sup, p, "notes", "ok", len(results), via=via)
+    return results
 
 
 # ---- reviews ----------------------------------------------------------------------------
 
 
 def _apply_reviews(request: Request, p: Principal, reviews: list[Any]) -> list[dict[str, Any]]:
-    sup = supervisor_of(request)
+    return apply_reviews(supervisor_of(request), p, reviews, via=None)
+
+
+def apply_reviews(
+    sup: Supervisor, p: Principal, reviews: list[ReviewIn], *, via: str | None
+) -> list[dict[str, Any]]:
+    """``POST reviews`` minus HTTP; the MCP ``submit_reviews`` tool runs this too."""
     specs = [ops.ReviewSpec(**r.model_dump()) for r in reviews]
     received = time.time()
     results = p.worker.submit(
@@ -97,7 +118,7 @@ def _apply_reviews(request: Request, p: Principal, reviews: list[Any]) -> list[d
     applied = sum(r["status"] == "applied" for r in results)
     if applied:
         p.worker.note_write()
-    _audit(request, p, "reviews", "ok", applied)
+    audit(sup, p, "reviews", "ok", applied, via=via)
     return results
 
 
@@ -202,6 +223,37 @@ def get_decks(profile: str, request: Request) -> Response:
     return _etag_response(request, {"decks": result})
 
 
+@router.get("/p/{profile}/models")
+def get_models(profile: str, request: Request) -> Response:
+    p = authorize(request, profile, "read", klass="read")
+    result = p.worker.submit("models", lambda s: ops.get_models(s), priority=PRIORITY_READ)
+    return _etag_response(request, {"models": result})
+
+
+@router.get("/p/{profile}/notes")
+def get_notes(
+    profile: str,
+    request: Request,
+    query: str = Query(min_length=1, max_length=2000),
+    limit: int = Query(default=ops.DEFAULT_SEARCH_LIMIT, ge=1, le=ops.MAX_SEARCH_LIMIT),
+    offset: int = Query(default=0, ge=0),
+    render: str = Query(default="text", pattern="^(text|html)$"),
+) -> Response:
+    p = authorize(request, profile, "read", klass="read")
+    result = p.worker.submit(
+        "search_notes",
+        lambda s: ops.search_notes(
+            s,
+            query,
+            limit=limit,
+            offset=offset,
+            render_mode=render,  # type: ignore[arg-type]
+        ),
+        priority=PRIORITY_READ,
+    )
+    return _etag_response(request, result)
+
+
 # ---- media ------------------------------------------------------------------------------
 
 
@@ -256,16 +308,21 @@ def post_sync(profile: str, request: Request, body: SyncRequest | None = None) -
         )
         return result.to_dict()
     p = authorize(request, profile, "sync", klass="sync")
-    if not body.wait:
+    return run_sync(sup, p, wait=body.wait, via=None)
+
+
+def run_sync(sup: Supervisor, p: Principal, *, wait: bool, via: str | None) -> dict[str, Any]:
+    """Incremental ``POST sync`` minus HTTP; the MCP ``sync`` tool runs this too."""
+    if not wait:
         p.worker.sync_async()
-        _audit(request, p, "sync", "queued")
+        audit(sup, p, "sync", "queued", via=via)
         return {"outcome": "queued"}
     try:
         result = p.worker.sync()
     except ApiError as exc:
-        _audit(request, p, "sync", f"error:{exc.code}")
+        audit(sup, p, "sync", f"error:{exc.code}", via=via)
         raise
-    _audit(request, p, "sync", result.outcome.value)
+    audit(sup, p, "sync", result.outcome.value, via=via)
     return result.to_dict()
 
 

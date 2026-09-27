@@ -7,6 +7,39 @@ public contract; the AnkiConnect shim follows AnkiConnect's own dialect.
 
 ## [Unreleased]
 
+## [0.2.0] - 2026-09-28
+
+### Added
+
+- MCP server at `/mcp/p/{profile}` (Streamable HTTP, stateless; protocol 2026-07-28, with the
+  older `initialize` handshake still accepted). Tools `list_decks`, `list_note_types`,
+  `search_notes`, `get_stats`, `get_queue`, `sync_status`, `add_notes`, `submit_reviews`,
+  `sync`, and a `review_session` prompt. The tool list follows the token's scopes; every call is
+  checked, rate-limited and audited (`via=mcp`) like its `/v1` counterpart. `path` media is not
+  accepted over MCP.
+- OAuth for MCP clients that cannot send a static header (claude.ai / Claude Desktop custom
+  connectors): protected-resource and authorization-server metadata, Client ID Metadata
+  Documents, Dynamic Client Registration, PKCE, a consent page where the profile owner pastes an
+  existing token, audience-bound access tokens (1 h), rotating refresh tokens (90 days, sliding),
+  `POST /oauth/revoke`. Grants appear in `ankido token list` as `oauth:<client>` and are revoked
+  together with the token that approved them.
+- `server.public_url` (needed for OAuth). When it is missing, plain http, or does not match the
+  request's host, the MCP and OAuth endpoints answer `oauth_not_configured` or
+  `oauth_public_url_mismatch` with the steps to fix it; `GET /v1/admin/profiles` reports
+  `oauth`.
+- `GET /v1/p/{profile}/models`: note types with field and template names.
+- `GET /v1/p/{profile}/notes?query=`: note search in Anki syntax, newest first, text or HTML
+  fields, `limit`/`offset`.
+- `server.rate_limits.oauth` for the consent, registration and token endpoints (per address).
+
+### Changed
+
+- `server.trusted_proxies` accepts CIDR ranges and is also used for `X-Forwarded-Host` /
+  `X-Forwarded-Proto` in the `public_url` check. Ankido interprets forwarded headers itself;
+  uvicorn's proxy-header rewriting is no longer enabled.
+- New dependency: the official `mcp` SDK (2.2).
+- `ankido.db` gains `oauth_*` tables and two `tokens` columns; they are added on first start.
+
 ## [0.1.0] - 2026-09-26
 
 First release.
@@ -52,5 +85,6 @@ First release.
 - Documentation: quickstart, API reference, AnkiConnect shim, client guide, deployment,
   schema-upgrade and full-sync policy, migration.
 
-[Unreleased]: https://github.com/H1D/AnkiDo/compare/v0.1.0...HEAD
+[Unreleased]: https://github.com/H1D/AnkiDo/compare/v0.2.0...HEAD
+[0.2.0]: https://github.com/H1D/AnkiDo/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/H1D/AnkiDo/releases/tag/v0.1.0

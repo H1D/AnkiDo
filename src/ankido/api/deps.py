@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import ipaddress
 from dataclasses import dataclass
 
 from fastapi import Request
@@ -15,6 +16,33 @@ from ankido.worker import ProfileWorker
 
 def supervisor_of(request: Request) -> Supervisor:
     return request.app.state.supervisor
+
+
+def is_trusted_proxy(peer: str, trusted: list[str]) -> bool:
+    try:
+        addr = ipaddress.ip_address(peer)
+    except ValueError:
+        return peer in trusted
+    for entry in trusted:
+        try:
+            if addr in ipaddress.ip_network(entry, strict=False):
+                return True
+        except ValueError:
+            if entry == peer:
+                return True
+    return False
+
+
+def client_ip(request: Request) -> str | None:
+    """The peer address, or the forwarded client address when the peer is a trusted proxy."""
+    peer = request.client.host if request.client else None
+    trusted = request.app.state.config.server.trusted_proxies
+    if peer and is_trusted_proxy(peer, trusted):
+        for header in ("cf-connecting-ip", "x-forwarded-for"):
+            v = request.headers.get(header)
+            if v:
+                return v.split(",")[0].strip()
+    return peer
 
 
 def bearer_from(request: Request) -> str | None:

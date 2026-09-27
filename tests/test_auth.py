@@ -43,10 +43,11 @@ def test_revoked_token_dies_immediately_even_when_cached(store: Store) -> None:
 
 
 def test_expired_token_is_rejected_even_when_cached(store: Store) -> None:
-    raw, _ = store.create_token(profile="alice", scopes=frozenset({"read"}), expires_in_seconds=1)
+    # 2 s, not 1: expiry is whole seconds, so a 1 s token can lapse before the first check.
+    raw, _ = store.create_token(profile="alice", scopes=frozenset({"read"}), expires_in_seconds=2)
     auth = Authenticator(store)
     auth.authenticate(raw)
-    time.sleep(1.1)
+    time.sleep(2.1)
     with pytest.raises(Unauthorized):
         auth.authenticate(raw)
 

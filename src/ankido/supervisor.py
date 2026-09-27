@@ -69,12 +69,15 @@ class Supervisor:
 
     def profiles_status(self) -> list[dict[str, Any]]:
         from ankido.collection.ops import profile_status
+        from ankido.oauth import oauth_status
 
+        oauth = oauth_status(self.config)
         out: list[dict[str, Any]] = []
         for w in self.workers.values():
             status = profile_status(w.session)
             status["queue_depth"] = w.queue_depth
             status["syncing"] = w.syncing
             status["current_op"] = w.current_op
+            status["oauth"] = oauth
             out.append(status)
         return out

@@ -8,7 +8,7 @@ import logging
 import time
 from typing import Any
 
-import httpx
+import httpx2
 import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
@@ -29,7 +29,7 @@ NOTES_BODY: dict[str, Any] = {
 REVIEWS_BODY: dict[str, Any] = {"reviews": [{"card_id": 1, "ease": 3}]}
 
 
-def assert_error(r: httpx.Response, status: int, code: str) -> dict[str, Any]:
+def assert_error(r: httpx2.Response, status: int, code: str) -> dict[str, Any]:
     assert r.status_code == status, r.text
     body = r.json()
     assert set(body) == {"error"}
@@ -727,3 +727,77 @@ def test_trusted_proxy_cidr_matching(
         if rec.name == "ankido.http" and rec.getMessage() == "request"
     ]
     assert clients == ["198.51.100.7", "192.0.2.9"]
+
+
+def test_models_lists_fields(client: TestClient, alice_read_token: str) -> None:
+    r = client.get("/v1/p/alice/models", headers=auth(alice_read_token))
+    assert r.status_code == 200, r.text
+    models = {m["name"]: m for m in r.json()["models"]}
+    assert models["Basic"]["fields"] == ["Front", "Back"]
+    assert models["Basic"]["cloze"] is False
+    assert models["Cloze"]["cloze"] is True
+    assert "Card 1" in models["Basic"]["templates"]
+    assert (
+        client.get(
+            "/v1/p/alice/models",
+            headers={**auth(alice_read_token), "If-None-Match": r.headers["etag"]},
+        ).status_code
+        == 304
+    )
+
+
+def test_search_notes(client: TestClient, alice_token: str, seed_notes: Seeder) -> None:
+    seed_notes(3, deck="Lang::Dutch", prefix="huis")
+    client.post(
+        "/v1/p/alice/notes",
+        json={
+            "deck": "Other",
+            "model": "Basic",
+            "notes": [{"fields": {"Front": "<b>kat</b>", "Back": "cat"}, "tags": ["pets"]}],
+        },
+        headers=auth(alice_token),
+    )
+    r = client.get("/v1/p/alice/notes", params={"query": "tag:pets"}, headers=auth(alice_token))
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["total"] == 1 and body["next_offset"] is None
+    note = body["notes"][0]
+    assert note["fields"] == {"Front": "kat", "Back": "cat"}
+    assert note["decks"] == ["Other"] and note["tags"] == ["pets"] and note["model"] == "Basic"
+
+    html = client.get(
+        "/v1/p/alice/notes",
+        params={"query": "tag:pets", "render": "html"},
+        headers=auth(alice_token),
+    ).json()
+    assert html["notes"][0]["fields"]["Front"] == "<b>kat</b>"
+
+    page = client.get(
+        "/v1/p/alice/notes",
+        params={"query": '"deck:Lang::Dutch"', "limit": 2},
+        headers=auth(alice_token),
+    ).json()
+    assert page["total"] == 3 and len(page["notes"]) == 2 and page["next_offset"] == 2
+    ids = [n["note_id"] for n in page["notes"]]
+    assert ids == sorted(ids, reverse=True)
+    rest = client.get(
+        "/v1/p/alice/notes",
+        params={"query": '"deck:Lang::Dutch"', "limit": 2, "offset": 2},
+        headers=auth(alice_token),
+    ).json()
+    assert len(rest["notes"]) == 1 and rest["next_offset"] is None
+
+    assert_error(
+        client.get("/v1/p/alice/notes", params={"query": "("}, headers=auth(alice_token)),
+        400,
+        "invalid_search",
+    )
+    assert_error(
+        client.get("/v1/p/alice/notes", headers=auth(alice_token)), 422, "validation_error"
+    )
+
+
+def test_search_notes_needs_read(client: TestClient, store: Store) -> None:
+    raw, _ = store.create_token(profile="alice", scopes=frozenset({"add"}))
+    r = client.get("/v1/p/alice/notes", params={"query": "deck:*"}, headers=auth(raw))
+    assert_error(r, 403, "forbidden")

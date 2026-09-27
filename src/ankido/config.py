@@ -14,6 +14,7 @@ import re
 import stat
 from pathlib import Path
 from typing import Literal
+from urllib.parse import urlsplit
 
 import yaml
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
@@ -36,6 +37,8 @@ class RateLimits(BaseModel):
     read: RateLimit = RateLimit(per_minute=600, burst=120)
     write: RateLimit = RateLimit(per_minute=120, burst=40)
     sync: RateLimit = RateLimit(per_minute=6, burst=3)
+    # OAuth consent, registration and token endpoints, keyed by client IP.
+    oauth: RateLimit = RateLimit(per_minute=20, burst=10)
 
 
 class ServerConfig(BaseModel):
@@ -49,6 +52,24 @@ class ServerConfig(BaseModel):
     idle_close_seconds: float = Field(default=600.0, ge=0)
     rate_limits: RateLimits = RateLimits()
     log_level: str = "INFO"
+    # External origin clients reach the service at, e.g. https://anki.example.com. Required for
+    # MCP OAuth (claude.ai connectors); static tokens work without it.
+    public_url: str | None = None
+
+    @field_validator("public_url")
+    @classmethod
+    def _check_public_url(cls, v: str | None) -> str | None:
+        if v is None or not v.strip():
+            return None
+        parsed = urlsplit(v.strip())
+        if parsed.scheme not in ("http", "https") or not parsed.hostname:
+            raise ValueError("public_url must be an absolute URL like https://anki.example.com")
+        if parsed.path.strip("/") or parsed.query or parsed.fragment:
+            raise ValueError(
+                "public_url must be an origin without a path (https://anki.example.com);"
+                " serve Ankido at the root of its own hostname"
+            )
+        return f"{parsed.scheme}://{parsed.netloc}"
 
 
 class MediaConfig(BaseModel):

@@ -2,7 +2,8 @@
 
 The `/v1` surface is the primary contract. Everything under `/v1/p/{profile}/` operates on one
 profile; `/v1/admin/` spans profiles. There is no generated OpenAPI document or Swagger page; this
-file is the reference.
+file is the reference. The same operations are available to LLM agents as MCP tools at
+`/mcp/p/{profile}`; see [mcp.md](mcp.md).
 
 All examples assume:
 
@@ -29,14 +30,17 @@ alias acurl='curl -sS -H "Authorization: Bearer $TOKEN" -H "Content-Type: applic
 
 | Scope | Grants |
 | --- | --- |
-| `read` | `GET queue`, `stats`, `decks`, `media/*`, `sync/status`; shim read actions |
-| `add` | `POST notes`; shim actions that create or modify notes, decks, tags, media |
-| `review` | `POST reviews`, `POST exchange`; shim `answerCards`, suspend, due-date changes |
-| `sync` | `POST sync` (incremental); shim `sync` (`exchange` syncs inline without it) |
+| `read` | `GET queue`, `stats`, `decks`, `models`, `notes`, `media/*`, `sync/status`; shim read actions; MCP read tools |
+| `add` | `POST notes`; shim actions that create or modify notes, decks, tags, media; MCP `add_notes` |
+| `review` | `POST reviews`, `POST exchange`; shim `answerCards`, suspend, due-date changes; MCP `submit_reviews` |
+| `sync` | `POST sync` (incremental); shim `sync` (`exchange` syncs inline without it); MCP `sync` |
 | `admin` | Everything above on the token's profile, `POST backup`, `force_full` sync, the `/v1/admin/*` endpoints (limited to the token's profile when bound). A token created with `--admin` has no profile binding and covers every profile. |
 
 A token is bound to one profile unless it was created with `--admin`. Using it on another profile
 yields `403 forbidden`.
+
+Tokens issued to MCP clients through OAuth (`akda_…`) only work on the MCP endpoint they were
+issued for. Here they get `401 unauthorized`.
 
 ### Error shape
 
@@ -90,13 +94,16 @@ request, the token, or the configuration.
 | `empty_first_field` | 400 | false | The note's first field is empty after normalization and no media was attached. |
 | `invalid_cursor` | 400 | true | The cursor does not belong to these query parameters. Fetch the first page again. |
 | `invalid_kinds` | 400 | false | `kinds` contains something other than `due`, `new`, `learning`. |
+| `invalid_search` | 400 | false | `GET notes`: the `query` is not valid Anki search syntax. |
+| `oauth_not_configured` | 404 (401 on `/mcp`) | false | An OAuth endpoint was called but `server.public_url` is not set. `details.fix` lists the steps. See [mcp.md](mcp.md#when-oauth-is-not-set-up). |
+| `oauth_public_url_mismatch` | 400 (401 on `/mcp`) | false | `server.public_url` is plain http, or the request arrived for another host. `details.expected`, `details.seen`, `details.fix`. |
 | `profile_busy` | 503 | true | Worker queue full (500 pending operations), operation timed out, or the service is shutting down. |
 | `profile_unavailable` | 503 | true | The collection file could not be read. |
 | `internal_error` | 500 | false | Unexpected exception; the log has the traceback. |
 
 The AnkiConnect shim maps the same codes to its own string-error format; see
-[ankiconnect-shim.md](ankiconnect-shim.md). Codes `invalid_params`, `invalid_search`,
-`unsupported_action` and `duplicate` exist only there.
+[ankiconnect-shim.md](ankiconnect-shim.md). Codes `invalid_params`, `unsupported_action` and
+`duplicate` exist only there.
 
 ### Rate limits
 
@@ -481,6 +488,66 @@ deck is omitted.
 
 ---
 
+## `GET /v1/p/{profile}/models`
+
+Scope `read`. Rate bucket `read`. `ETag` supported. The note types of the collection, with the
+field names in order (the first field is the one `POST notes` deduplicates on) and the card
+template names. Use `name` as `model` in `POST notes`.
+
+```sh
+acurl $ANKIDO/v1/p/alice/models
+```
+
+```json
+{
+  "models": [
+    {"id": 1758000000100, "name": "Basic", "fields": ["Front", "Back"], "templates": ["Card 1"], "cloze": false},
+    {"id": 1758000000101, "name": "Cloze", "fields": ["Text", "Back Extra"], "templates": ["Cloze"], "cloze": true}
+  ]
+}
+```
+
+---
+
+## `GET /v1/p/{profile}/notes`
+
+Scope `read`. Rate bucket `read`. `ETag` supported. Search notes with Anki's search syntax,
+newest first. Read-only.
+
+| Query | Default | Meaning |
+| --- | --- | --- |
+| `query` | required | Anki search, e.g. `deck:Dutch huis`, `tag:verbs`, `added:7`, `"front:kat*"`. `deck:*` matches everything. 1 to 2000 characters. |
+| `limit` | `50` | 1 to 500. |
+| `offset` | `0` | Skip this many matches. |
+| `render` | `text` | `text`: field values with markup, media references and sound tags removed. `html`: the stored field values. |
+
+```sh
+acurl "$ANKIDO/v1/p/alice/notes?query=tag:verbs&limit=2"
+```
+
+```json
+{
+  "notes": [
+    {
+      "note_id": 1758000123456,
+      "model": "Basic",
+      "decks": ["Dutch::Common"],
+      "fields": {"Front": "lopen", "Back": "to walk"},
+      "tags": ["verbs"],
+      "card_ids": [1758000123457],
+      "mod": 1790000000
+    }
+  ],
+  "total": 14,
+  "next_offset": 2
+}
+```
+
+`decks` lists the decks of the note's cards. `next_offset` is `null` on the last page. A query
+Anki cannot parse yields `400 invalid_search`.
+
+---
+
 ## `GET /v1/p/{profile}/media/{filename}`
 
 Scope `read`. Rate bucket `read`. Serves one file from the profile's media directory with a
@@ -635,7 +702,8 @@ acurl $ANKIDO/v1/admin/profiles
       "cards": 2468,
       "queue_depth": 0,
       "syncing": false,
-      "current_op": null
+      "current_op": null,
+      "oauth": "ok"
     },
     {
       "profile": "bob",
@@ -649,7 +717,8 @@ acurl $ANKIDO/v1/admin/profiles
       "sync_configured": true,
       "queue_depth": 0,
       "syncing": false,
-      "current_op": null
+      "current_op": null,
+      "oauth": "ok"
     }
   ]
 }
@@ -657,7 +726,9 @@ acurl $ANKIDO/v1/admin/profiles
 
 `schema_version`, `collection_mod`, `notes` and `cards` are present only while the collection is
 open. `schema_upgraded` is `true` if this process upgraded the schema on open. `queue_depth` is
-the number of operations waiting for the worker; `current_op` names the one running.
+the number of operations waiting for the worker; `current_op` names the one running. `oauth` is
+the MCP OAuth setup, the same for every profile: `ok`, `not_configured` (no
+`server.public_url`) or `insecure` (plain-http `public_url`); see [mcp.md](mcp.md#oauth).
 
 ---
 

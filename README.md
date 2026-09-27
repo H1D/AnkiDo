@@ -40,6 +40,11 @@ writes, compact payloads.
 - `GET /stats`, `GET /decks`, `GET /media/{filename}` with `Range`.
 - `POST /sync` and `GET /sync/status`: incremental collection and media sync; autosync
   `after_write` (debounced), `nightly`, or `off`.
+- MCP at `/mcp/p/{profile}` for LLM agents (Claude Code, claude.ai, VS Code, Cursor): add
+  notes, search, review in chat, stats, sync. Tools are filtered by token scope; claude.ai
+  connectors sign in with OAuth against a consent page where you paste an Ankido token.
+- `GET /models` and `GET /notes?query=`: note types with their fields, and note search with
+  Anki's search syntax.
 - AnkiConnect v6 shim at `POST /api/{profile}` so Yomitan, asbplayer and existing scripts keep
   working.
 - Tokens with scopes `read`, `add`, `review`, `sync`, `admin`; only argon2 hashes are stored;
@@ -158,17 +163,18 @@ without Docker, is in [docs/quickstart.md](docs/quickstart.md).
       "http://127.0.0.1:8765/v1/p/alice/queue?limit=5"
     ```
 
-## Two API surfaces
+## Three API surfaces
 
-| | `/v1/p/{profile}/...` | `/api/{profile}` (AnkiConnect shim) |
-| --- | --- | --- |
-| Purpose | Primary contract; new features land here | Compatibility for Yomitan, asbplayer, existing scripts |
-| Auth | `Authorization: Bearer` | `Authorization: Bearer` or legacy `key` in the body |
-| Errors | HTTP status plus `{"error":{"code","message","retryable"}}` | HTTP 200 with a bare error string |
-| Idempotency | `client_id` on notes and reviews | None; re-sent `answerCards` grades twice |
-| Efficiency | Cursor, `ETag`/`304`, `Range`, gzip, compact text | Everything at once, raw HTML |
+| | `/v1/p/{profile}/...` | `/mcp/p/{profile}` (MCP) | `/api/{profile}` (AnkiConnect shim) |
+| --- | --- | --- | --- |
+| Purpose | Primary contract; new features land here | LLM agents; the `/v1` operations as tools | Compatibility for Yomitan, asbplayer, existing scripts |
+| Auth | `Authorization: Bearer` | `Authorization: Bearer`, or OAuth sign-in | `Authorization: Bearer` or legacy `key` in the body |
+| Errors | HTTP status plus `{"error":{"code","message","retryable"}}` | Tool result with `isError` and the same JSON | HTTP 200 with a bare error string |
+| Idempotency | `client_id` on notes and reviews | Same as `/v1` | None; re-sent `answerCards` grades twice |
+| Efficiency | Cursor, `ETag`/`304`, `Range`, gzip, compact text | Compact text | Everything at once, raw HTML |
 
-Reference: [docs/api.md](docs/api.md) and [docs/ankiconnect-shim.md](docs/ankiconnect-shim.md).
+Reference: [docs/api.md](docs/api.md), [docs/mcp.md](docs/mcp.md) and
+[docs/ankiconnect-shim.md](docs/ankiconnect-shim.md).
 
 ## Hard invariants
 
@@ -180,8 +186,9 @@ Reference: [docs/api.md](docs/api.md) and [docs/ankiconnect-shim.md](docs/ankico
    `sync_required_full`. Forcing it is an admin-only call that requires `confirm`, takes a backup,
    and writes an audit entry.
 4. Schema upgrades need permission (see the warning below).
-5. No anonymous surface. Only `GET /healthz` answers without a token, and it carries no data. The
-   default bind is `127.0.0.1`.
+5. No anonymous surface. Only `GET /healthz` answers without a token, and it carries no data
+   (plus, once you enable MCP OAuth, the OAuth discovery documents and the consent page, which
+   carry none either). The default bind is `127.0.0.1`.
 6. Writes are idempotent by `client_id`.
 7. Secrets never reach logs, error messages, metrics, or the audit log.
 8. No telemetry. The service talks to AnkiWeb and to the media hosts you allowlist, nothing else.
@@ -214,15 +221,16 @@ you set `allow_schema_upgrade: true` on that profile. When you do, it takes a ba
 
 ## Status and roadmap
 
-Version 0.1. The `/v1` surface is the contract; changes to it follow semver and are recorded in
-[CHANGELOG.md](CHANGELOG.md). Planned for 1.1: an MCP mode so agents can use a collection as a
-tool without going through HTTP themselves.
+Version 0.2. The `/v1` surface and the MCP tool set are the contract; changes to them follow
+semver and are recorded in [CHANGELOG.md](CHANGELOG.md).
 
 ## Documentation
 
 - [docs/quickstart.md](docs/quickstart.md): compose and bare-metal setup, config reference, CLI
 - [docs/api.md](docs/api.md): `/v1` reference with `curl` examples and error codes
 - [docs/ankiconnect-shim.md](docs/ankiconnect-shim.md): the AnkiConnect-compatible endpoint
+- [docs/mcp.md](docs/mcp.md): MCP tools, client setup (Claude Code, claude.ai, VS Code,
+  Cursor), OAuth
 - [docs/clients.md](docs/clients.md): writing your own client, offline replay, `exchange`
 - [docs/deploy.md](docs/deploy.md): reverse proxies, Cloudflare Tunnel, backups, updates, logs
 - [docs/schema-upgrade.md](docs/schema-upgrade.md): the upgrade risk and the full-sync policy

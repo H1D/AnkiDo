@@ -3,7 +3,6 @@
 
 from __future__ import annotations
 
-import ipaddress
 import time
 from collections.abc import AsyncGenerator, Awaitable, Callable
 from contextlib import asynccontextmanager
@@ -14,9 +13,13 @@ from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from starlette.middleware.gzip import GZipMiddleware
+from starlette.routing import Route
 
-from ankido import __version__
+from ankido import __version__, oauth
+from ankido.api import oauth as oauth_api
 from ankido.api import shim, v1
+from ankido.api.deps import client_ip
+from ankido.api.mcp import McpEndpoint
 from ankido.config import Config
 from ankido.errors import ApiError, InternalError, PayloadTooLarge
 from ankido.logging import get_logger
@@ -27,12 +30,25 @@ log = get_logger("ankido.http")
 
 def create_app(config: Config, supervisor: Supervisor | None = None) -> FastAPI:
     sup = supervisor or Supervisor(config)
+    mcp = McpEndpoint(sup)
 
     @asynccontextmanager
     async def lifespan(app: FastAPI) -> AsyncGenerator[None]:
         sup.start()
+        status = oauth.oauth_status(config)
+        if status != "ok":
+            log.warning(
+                "MCP OAuth unavailable (claude.ai connectors cannot sign in); static tokens work",
+                fields={
+                    "oauth": status,
+                    "fix": "set server.public_url to the external https origin"
+                    if status == "not_configured"
+                    else "server.public_url must be https",
+                },
+            )
         try:
-            yield
+            async with mcp.lifespan():
+                yield
         finally:
             sup.stop()
 
@@ -46,6 +62,8 @@ def create_app(config: Config, supervisor: Supervisor | None = None) -> FastAPI:
     )
     app.state.supervisor = sup
     app.state.config = config
+    app.state.oauth_clients = oauth.ClientRegistry(sup.store)
+    app.state.oauth_pending = oauth.PendingStore()
 
     if config.server.cors_origins:
         app.add_middleware(
@@ -84,7 +102,7 @@ def create_app(config: Config, supervisor: Supervisor | None = None) -> FastAPI:
             route = getattr(route_obj, "path", route)
         sup.metrics.inc("http_requests_total", route=route, status=str(response.status_code))
         sup.metrics.observe("http_request_seconds", elapsed, route=route)
-        client = _client_ip(request, config)
+        client = client_ip(request)
         log.info(
             "request",
             fields={
@@ -118,32 +136,11 @@ def create_app(config: Config, supervisor: Supervisor | None = None) -> FastAPI:
 
     app.include_router(v1.router)
     app.include_router(shim.router)
+    app.include_router(oauth_api.router)
+    # Plain routes rather than a mount: the endpoint is exactly /mcp/p/{profile}, no redirect.
+    for path in ("/mcp/p/{profile}", "/mcp/p/{profile}/"):
+        app.router.routes.append(Route(path, mcp, methods=["GET", "POST", "DELETE"]))
     return app
-
-
-def _is_trusted_proxy(peer: str, trusted: list[str]) -> bool:
-    try:
-        addr = ipaddress.ip_address(peer)
-    except ValueError:
-        return peer in trusted
-    for entry in trusted:
-        try:
-            if addr in ipaddress.ip_network(entry, strict=False):
-                return True
-        except ValueError:
-            if entry == peer:
-                return True
-    return False
-
-
-def _client_ip(request: Request, config: Config) -> str | None:
-    peer = request.client.host if request.client else None
-    if peer and _is_trusted_proxy(peer, config.server.trusted_proxies):
-        for header in ("cf-connecting-ip", "x-forwarded-for"):
-            v = request.headers.get(header)
-            if v:
-                return v.split(",")[0].strip()
-    return peer
 
 
 def _clean_errors(errors: list[Any]) -> list[dict[str, Any]]:

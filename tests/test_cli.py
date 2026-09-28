@@ -85,7 +85,7 @@ def test_token_create_errors(config_path: Path, capsys: pytest.CaptureFixture[st
         main(["--config", c, "token", "create", "--profile", "alice", "--expires", "soon"])
     assert ei.value.code == 2
     rc, _, err = run(
-        capsys, "--config", c, "token", "create", "--profile", "alice", "--scopes", "delete"
+        capsys, "--config", c, "token", "create", "--profile", "alice", "--scopes", "erase"
     )
     assert rc == 1 and "unknown scope" in err
 

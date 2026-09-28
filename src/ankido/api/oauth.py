@@ -251,7 +251,9 @@ async def authorize_page(request: Request) -> Response:
         profile=profile,
         requested=requested,
     )
-    return _consent_page(request, pending, checked=requested)
+    return _consent_page(
+        request, pending, checked=[s for s in requested if s not in oauth.OPT_IN_SCOPES]
+    )
 
 
 def sup_pending(request: Request) -> oauth.PendingStore:
@@ -561,6 +563,7 @@ _SCOPE_TEXT = {
     "add": "Add notes (and their audio or pictures)",
     "review": "Submit review grades",
     "sync": "Start a sync with AnkiWeb",
+    "delete": "Delete notes (a backup is taken first)",
 }
 
 

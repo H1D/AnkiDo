@@ -50,10 +50,20 @@ something the shim cannot: idempotency, structured errors, offline timestamps.
 
 ### What stays on the shim
 
-`findNotes`, `notesInfo`, `updateNoteFields`, tags, `suspend`/`unsuspend`, `setDueDate`,
-`forgetCards`, `changeDeck`, `createDeck`, `deleteNotes`/`deleteDecks` (admin scope), model
-inspection, and the media directory actions have no `/v1` counterpart in 0.1. They keep working
-on the shim with the same token.
+Since 0.3.0 these have `/v1` counterparts:
+
+| AnkiConnect | `/v1` |
+| --- | --- |
+| `findNotes` + `notesInfo` | `GET /v1/p/{p}/notes?query=` (`render=html` for stored values) |
+| `updateNoteFields`, `addTags`, `removeTags` | `PATCH /v1/p/{p}/notes`, which adds `expected_mod` and media checks |
+| `getTags` | `GET /v1/p/{p}/tags` |
+| `suspend`, `unsuspend`, `forgetCards`, `setDueDate` | `POST /v1/p/{p}/cards/schedule` |
+| `changeDeck` | `POST /v1/p/{p}/cards/move` |
+| `createDeck` | `POST /v1/p/{p}/decks` |
+| `deleteNotes` | `POST /v1/p/{p}/notes/delete` (scope `delete`) |
+
+`deleteDecks` (admin scope), `cardsInfo` for arbitrary cards, model inspection, and the media
+directory actions have no `/v1` counterpart. They keep working on the shim with the same token.
 
 ### Error handling
 

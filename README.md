@@ -40,14 +40,19 @@ writes, compact payloads.
 - `GET /stats`, `GET /decks`, `GET /media/{filename}` with `Range`.
 - `POST /sync` and `GET /sync/status`: incremental collection and media sync; autosync
   `after_write` (debounced), `nightly`, or `off`.
-- MCP at `/mcp/p/{profile}` for LLM agents (Claude Code, claude.ai, VS Code, Cursor): add
-  notes, search, review in chat, stats, sync. Tools are filtered by token scope; claude.ai
+- MCP at `/mcp/p/{profile}` for LLM agents (Claude Code, claude.ai, VS Code, Cursor): add and
+  edit notes, search, review in chat, suspend or reschedule cards, move cards, stats, sync,
+  and (with the `delete` scope) delete notes. Tools are filtered by token scope; claude.ai
   connectors sign in with OAuth against a consent page where you paste an Ankido token.
+- `PATCH /notes`: edit fields, tags and attachments, with `expected_mod` against stale writes
+  and a guard against edits that would drop media. `POST /notes/delete` (scope `delete`) backs
+  the collection up first. `POST /cards/schedule` suspends, unsuspends, forgets or sets the due
+  date without a review; `POST /cards/move`, `POST /decks`, `GET /tags`.
 - `GET /models` and `GET /notes?query=`: note types with their fields, and note search with
   Anki's search syntax.
 - AnkiConnect v6 shim at `POST /api/{profile}` so Yomitan, asbplayer and existing scripts keep
   working.
-- Tokens with scopes `read`, `add`, `review`, `sync`, `admin`; only argon2 hashes are stored;
+- Tokens with scopes `read`, `add`, `review`, `sync`, `delete`, `admin`; only argon2 hashes are stored;
   expiry and revocation.
 - Rate limits per token and per profile, request size limit, operation timeouts, CORS allowlist,
   append-only audit log, Prometheus-format metrics, JSON logs with secret scrubbing.

@@ -168,7 +168,7 @@ left to the client.
 
 ## 7. Security
 
-- **Tokens**: several per profile, scopes `read`, `add`, `review`, `sync`, `admin`. Store only the
+- **Tokens**: several per profile, scopes `read`, `add`, `review`, `sync`, `delete`, `admin`. Store only the
   hash (argon2/scrypt) and reveal the secret once at creation:
   `ankido token create --profile alice --scopes read,review`. Support revoke, list, and expiry.
 - Tokens go in the `Authorization: Bearer` header; the body field `key` is accepted by the legacy shim

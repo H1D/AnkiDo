@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
 """Operations on an open collection. Every function here runs on the profile's worker thread.
 
-This is the single implementation behind both ``/v1`` and the AnkiConnect shim.
+This is the single implementation behind ``/v1``, MCP and the AnkiConnect shim.
 """
 
 from __future__ import annotations
@@ -36,7 +36,7 @@ from anki.scheduler_pb2 import CardAnswer, QueuedCards
 from ankido.collection.media import MediaResolver
 from ankido.collection.render import html_to_text, normalize_headword, render
 from ankido.collection.session import Session
-from ankido.errors import ApiError, NotFound
+from ankido.errors import ApiError, Conflict, NotFound
 from ankido.store import Store
 
 Kind = Literal["new", "learning", "due"]
@@ -158,12 +158,8 @@ def _add_one(
     stored: list[str] = []
     fields = dict(spec.fields)
     for media in spec.audio + spec.picture:
-        name, data = resolver.resolve(
-            filename=media.filename, data=media.data, path=media.path, url=media.url
-        )
-        actual = col.media.write_data(name, data)
+        actual, tag = _store_media(col, resolver, media)
         stored.append(actual)
-        tag = f"[sound:{actual}]" if media.kind == "audio" else f'<img src="{actual}">'
         targets = media.fields or [first_field]
         for target in targets:
             if target not in field_names:
@@ -217,6 +213,246 @@ def _find_duplicate(col: Collection, mid: int, first_field: str, headword: str) 
         if normalize_headword(first) == headword:
             return col.get_note(NoteId(nid))
     return None
+
+
+# ---- editing ----------------------------------------------------------------------------
+
+MAX_EDIT_ITEMS = 100
+DELETE_BACKUP_INTERVAL_SECONDS = 3600
+RESCHEDULE_ACTIONS = ("suspend", "unsuspend", "forget", "set_due")
+_DUE_DAYS_RE = re.compile(r"^\d+(-\d+)?!?$")
+_MEDIA_REF_RE = re.compile(
+    r"\[sound:([^\]]+)\]|<img\b[^>]*?\bsrc\s*=\s*[\"']?([^\"'\s>]+)", re.IGNORECASE
+)
+
+
+@dataclass
+class NoteUpdate:
+    note_id: int
+    fields: dict[str, str] = field(default_factory=dict)
+    add_tags: list[str] = field(default_factory=list)
+    remove_tags: list[str] = field(default_factory=list)
+    audio: list[MediaSpec] = field(default_factory=list)
+    picture: list[MediaSpec] = field(default_factory=list)
+    expected_mod: int | None = None
+    allow_media_loss: bool = False
+
+
+def _media_refs(field_html: str) -> set[str]:
+    return {a or b for a, b in _MEDIA_REF_RE.findall(field_html)}
+
+
+def update_notes(
+    session: Session, resolver: MediaResolver | None, updates: list[NoteUpdate]
+) -> list[dict[str, Any]]:
+    """Edit fields and tags of existing notes; one result per update, errors included."""
+    col = session.require()
+    results: list[dict[str, Any]] = []
+    for u in updates:
+        try:
+            results.append(_update_one(col, resolver, u))
+        except ApiError as exc:
+            results.append(
+                {"status": "error", "note_id": u.note_id, "error": exc.to_dict()["error"]}
+            )
+    return results
+
+
+def _update_one(col: Collection, resolver: MediaResolver | None, u: NoteUpdate) -> dict[str, Any]:
+    try:
+        note = col.get_note(NoteId(u.note_id))
+    except NotFoundError:
+        raise NotFound(f"note {u.note_id} not found", code="note_not_found") from None
+    if u.expected_mod is not None and note.mod != u.expected_mod:
+        raise Conflict(
+            f"note {u.note_id} changed since it was read; read it again and reapply the edit",
+            code="stale",
+            details={"mod": note.mod},
+        )
+    notetype = note.note_type()
+    assert notetype is not None
+    field_names = col.models.field_names(notetype)
+    unknown = set(u.fields) - set(field_names)
+    if unknown:
+        raise ApiError(
+            f"unknown field(s) for model {notetype['name']!r}: {', '.join(sorted(unknown))}",
+            code="unknown_field",
+            details={"fields": field_names},
+        )
+    if not u.allow_media_loss:
+        for name, value in u.fields.items():
+            lost = _media_refs(note[name]) - _media_refs(value)
+            if lost:
+                raise ApiError(
+                    f"the new value of {name!r} drops media: {', '.join(sorted(lost))}. Read the"
+                    " note with HTML fields and keep its [sound:…] and <img> tags, or pass"
+                    " allow_media_loss=true if removing them is intended",
+                    code="media_would_be_lost",
+                    details={"field": name, "media": sorted(lost)},
+                )
+
+    fields = dict(u.fields)
+    stored: list[str] = []
+    for media in u.audio + u.picture:
+        if resolver is None:
+            raise ApiError("media is not supported here", code="media_not_supported")
+        targets = media.fields or [field_names[0]]
+        for target in targets:
+            if target not in field_names:
+                raise ApiError(f"media target field {target!r} not in model", code="unknown_field")
+        actual, tag = _store_media(col, resolver, media)
+        stored.append(actual)
+        for target in targets:
+            current = fields.get(target, note[target])
+            if tag not in current:  # a retry must not attach the same file twice
+                fields[target] = (current + tag).strip()
+
+    first = field_names[0]
+    if first in fields and not fields[first].strip():
+        raise ApiError(f"first field {first!r} would be empty", code="empty_first_field")
+
+    changed = False
+    for name, value in fields.items():
+        if note[name] != value:
+            note[name] = value
+            changed = True
+    for t in _split_tags(u.add_tags):
+        if not note.has_tag(t):
+            note.add_tag(t)
+            changed = True
+    for t in _split_tags(u.remove_tags):
+        if note.has_tag(t):
+            note.remove_tag(t)
+            changed = True
+    if changed:
+        col.update_note(note)
+        note = col.get_note(note.id)
+    return {
+        "status": "updated" if changed else "unchanged",
+        "note_id": note.id,
+        "mod": note.mod,
+        "tags": list(note.tags),
+        "media": stored,
+    }
+
+
+def _split_tags(tags: list[str]) -> list[str]:
+    """Anki tags cannot contain spaces; "a b" means two tags."""
+    return [part for t in tags for part in t.split()]
+
+
+def _store_media(col: Collection, resolver: MediaResolver, media: MediaSpec) -> tuple[str, str]:
+    """Write one attachment into the media folder; returns its stored name and field tag."""
+    name, data = resolver.resolve(
+        filename=media.filename, data=media.data, path=media.path, url=media.url
+    )
+    actual = col.media.write_data(name, data)
+    tag = f"[sound:{actual}]" if media.kind == "audio" else f'<img src="{actual}">'
+    return actual, tag
+
+
+def _existing_ids(col: Collection, table: Literal["notes", "cards"], ids: list[int]) -> set[int]:
+    if not ids:
+        return set()
+    marks = ",".join("?" * len(ids))
+    return {int(i) for i in _db(col).list(f"select id from {table} where id in ({marks})", *ids)}
+
+
+def delete_notes(session: Session, note_ids: list[int]) -> dict[str, Any]:
+    """Delete notes and their cards. The first delete in an hour backs the collection up."""
+    col = session.require()
+    ids = list(dict.fromkeys(note_ids))
+    existing = _existing_ids(col, "notes", ids)
+    backup: str | None = None
+    if existing:
+        now = time.time()
+        last = session.last_delete_backup_at
+        if last is None or now - last >= DELETE_BACKUP_INTERVAL_SECONDS:
+            backup = session.backup("pre-delete").name
+            session.last_delete_backup_at = now
+            col = session.require()  # backup() reopens the collection
+        col.remove_notes([NoteId(n) for n in ids if n in existing])
+    return {
+        "results": [
+            {"note_id": n, "status": "deleted" if n in existing else "not_found"} for n in ids
+        ],
+        "backup": backup,
+    }
+
+
+def list_tags(session: Session) -> list[str]:
+    return sorted(session.require().tags.all(), key=str.casefold)
+
+
+def reschedule_cards(
+    session: Session, card_ids: list[int], action: str, days: str | None = None
+) -> list[dict[str, Any]]:
+    """Suspend, unsuspend, forget (reset to new) or set the due date, without a review."""
+    if action not in RESCHEDULE_ACTIONS:
+        raise ApiError(
+            f"unknown action {action!r}; one of {', '.join(RESCHEDULE_ACTIONS)}",
+            code="invalid_action",
+        )
+    if action == "set_due" and (days is None or not _DUE_DAYS_RE.fullmatch(days.strip())):
+        raise ApiError(
+            'set_due needs days like "0" (today), "3", "3-7" (random in range) or "7!"'
+            " (also set the interval)",
+            code="invalid_days",
+        )
+    col = session.require()
+    ids = list(dict.fromkeys(card_ids))
+    existing = _existing_ids(col, "cards", ids)
+    found = [CardId(c) for c in ids if c in existing]
+    if found:
+        sched = _sched(col)
+        if action == "suspend":
+            sched.suspend_cards(found)
+        elif action == "unsuspend":
+            sched.unsuspend_cards(found)
+        elif action == "forget":
+            sched.schedule_cards_as_new(found)
+        else:
+            assert days is not None
+            sched.set_due_date(found, days.strip())
+    return [_card_result(col, c, existing) for c in ids]
+
+
+def move_cards(session: Session, card_ids: list[int], deck: str) -> dict[str, Any]:
+    """Move cards to ``deck``, creating it if needed."""
+    col = session.require()
+    did = _deck_id(col, deck)
+    ids = list(dict.fromkeys(card_ids))
+    existing = _existing_ids(col, "cards", ids)
+    if existing:
+        col.set_deck([CardId(c) for c in ids if c in existing], did)
+    return {
+        "deck": col.decks.name(did),
+        "results": [
+            {"card_id": c, "status": "moved" if c in existing else "not_found"} for c in ids
+        ],
+    }
+
+
+def create_deck(session: Session, name: str) -> dict[str, Any]:
+    col = session.require()
+    before = col.decks.id_for_name(name.strip())
+    did = _deck_id(col, name)
+    return {"deck_id": int(did), "name": col.decks.name(did), "created": before is None}
+
+
+def _deck_id(col: Collection, name: str) -> DeckId:
+    if not name.strip() or not name.replace(":", "").strip():
+        raise ApiError("deck name is empty", code="invalid_deck_name")
+    did = col.decks.id(name.strip(), create=True)
+    assert did is not None
+    return did
+
+
+def _card_result(col: Collection, cid: int, existing: set[int]) -> dict[str, Any]:
+    if cid not in existing:
+        return {"card_id": cid, "status": "not_found"}
+    card = col.get_card(CardId(cid))
+    return {"card_id": cid, "status": "ok", **_card_schedule(col, card)}
 
 
 # ---- reviews ----------------------------------------------------------------------------

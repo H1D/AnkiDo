@@ -89,8 +89,8 @@ The scope column is what the token must have; `admin` covers everything. Actions
 | `addNotes` | add (write) | List of ids; `null` where a note failed. |
 | `findNotes` | read | `params.query` in Anki search syntax. |
 | `notesInfo` | read | `noteId`, `modelName`, `tags`, `fields` (`{name: {value, order}}`), `cards`, `mod`. `{}` for unknown ids. |
-| `updateNoteFields` | add (write) | `params.note = {id, fields}`. Audio/picture on update are not supported. |
-| `deleteNotes` | admin (write) | |
+| `updateNoteFields` | add (write) | `params.note = {id, fields}`. Audio/picture on update are not supported (use `PATCH /v1/p/{profile}/notes`). Unknown fields are an error. Last write wins; no stale or media checks. |
+| `deleteNotes` | delete (write) | Backs the collection up first, at most once an hour; the audit entry lists the ids. |
 | `addTags`, `removeTags` | add (write) | `params.notes`, `params.tags` (space-separated string). |
 | `getTags` | read | |
 | `findCards` | read | |

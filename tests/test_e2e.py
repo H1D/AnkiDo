@@ -210,6 +210,53 @@ def test_add_sync_review_sync_verify(e2e: dict[str, Any]) -> None:
     assert synced["outcome"] == "merged"
 
 
+def test_edit_move_suspend_delete_reach_other_devices(e2e: dict[str, Any]) -> None:
+    run = uuid.uuid4().hex[:8]
+    tag = f"ankido-e2e-edit-{run}"
+    moved_deck = f"{DECK}::Moved"
+    for profile in ("main", "verify"):
+        r = e2e["client"].post(f"/v1/p/{profile}/sync", headers=e2e["h"])
+        assert r.status_code == 200, r.text  # the first test left AnkiWeb in a usable state
+
+    [added] = _post(
+        e2e,
+        "/v1/p/main/notes",
+        {
+            "deck": DECK,
+            "model": "Basic",
+            "tags": [tag],
+            "notes": [{"fields": {"Front": f"e2e edit {run}", "Back": "before"}}],
+        },
+    )["results"]
+    nid, cid = added["note_id"], added["card_ids"][0]
+    assert _post(e2e, "/v1/p/main/sync")["outcome"] == "merged"
+
+    r = e2e["client"].patch(
+        "/v1/p/main/notes",
+        headers=e2e["h"],
+        json={"notes": [{"note_id": nid, "fields": {"Back": "<b>after</b>"}, "add_tags": ["x"]}]},
+    )
+    assert r.json()["results"][0]["status"] == "updated", r.text
+    [sus] = _post(e2e, "/v1/p/main/cards/schedule", {"card_ids": [cid], "action": "suspend"})[
+        "results"
+    ]
+    assert sus["queue"] == "suspended"
+    _post(e2e, "/v1/p/main/cards/move", {"card_ids": [cid], "deck": moved_deck})
+    assert _post(e2e, "/v1/p/main/sync")["outcome"] == "merged"
+
+    assert _post(e2e, "/v1/p/verify/sync")["outcome"] in ("merged", "downloaded")
+    [note] = _get(e2e, "/v1/p/verify/notes", query=f"nid:{nid}", render="html")["notes"]
+    assert note["fields"]["Back"] == "<b>after</b>"
+    assert set(note["tags"]) == {tag, "x"} and note["decks"] == [moved_deck]
+    assert _shim(e2e, "verify", "areSuspended", {"cards": [cid]}) == [True]
+
+    deleted = _post(e2e, "/v1/p/main/notes/delete", {"note_ids": [nid]})
+    assert deleted["results"] == [{"note_id": nid, "status": "deleted"}]
+    assert _post(e2e, "/v1/p/main/sync")["outcome"] == "merged"
+    assert _post(e2e, "/v1/p/verify/sync")["outcome"] == "merged"
+    assert _get(e2e, "/v1/p/verify/notes", query=f"nid:{nid}")["total"] == 0
+
+
 def test_full_sync_is_never_implicit(e2e: dict[str, Any]) -> None:
     """Force-full needs admin + confirm; without confirm it is refused before touching AnkiWeb."""
     r = e2e["client"].post("/v1/p/main/sync", headers=e2e["h"], json={"force_full": "upload"})

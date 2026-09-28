@@ -27,6 +27,11 @@ NOTES_BODY: dict[str, Any] = {
     "notes": [{"fields": {"Front": "het huis", "Back": "house"}}],
 }
 REVIEWS_BODY: dict[str, Any] = {"reviews": [{"card_id": 1, "ease": 3}]}
+PATCH_BODY: dict[str, Any] = {"notes": [{"note_id": 1, "add_tags": ["x"]}]}
+DELETE_BODY: dict[str, Any] = {"note_ids": [1]}
+SCHEDULE_BODY: dict[str, Any] = {"card_ids": [1], "action": "suspend"}
+MOVE_BODY: dict[str, Any] = {"card_ids": [1], "deck": "X"}
+DECK_BODY: dict[str, Any] = {"name": "X"}
 
 
 def assert_error(r: httpx2.Response, status: int, code: str) -> dict[str, Any]:
@@ -70,6 +75,12 @@ def test_healthz_needs_no_auth_and_carries_no_data(client: TestClient) -> None:
 V1_ENDPOINTS: list[tuple[str, str, dict[str, Any] | None]] = [
     ("post", "/v1/p/alice/notes", NOTES_BODY),
     ("post", "/v1/p/alice/reviews", REVIEWS_BODY),
+    ("patch", "/v1/p/alice/notes", PATCH_BODY),
+    ("post", "/v1/p/alice/notes/delete", DELETE_BODY),
+    ("get", "/v1/p/alice/tags", None),
+    ("post", "/v1/p/alice/cards/schedule", SCHEDULE_BODY),
+    ("post", "/v1/p/alice/cards/move", MOVE_BODY),
+    ("post", "/v1/p/alice/decks", DECK_BODY),
     ("get", "/v1/p/alice/queue", None),
     ("post", "/v1/p/alice/exchange", {}),
     ("get", "/v1/p/alice/stats", None),
@@ -101,6 +112,11 @@ WRONG_SCOPE: list[tuple[str, str, dict[str, Any] | None, str | None]] = [
     ("post", "/v1/p/alice/notes", NOTES_BODY, "add"),
     ("post", "/v1/p/alice/reviews", REVIEWS_BODY, "review"),
     ("post", "/v1/p/alice/exchange", REVIEWS_BODY, "review"),
+    ("patch", "/v1/p/alice/notes", PATCH_BODY, "add"),
+    ("post", "/v1/p/alice/notes/delete", DELETE_BODY, "delete"),
+    ("post", "/v1/p/alice/cards/schedule", SCHEDULE_BODY, "review"),
+    ("post", "/v1/p/alice/cards/move", MOVE_BODY, "add"),
+    ("post", "/v1/p/alice/decks", DECK_BODY, "add"),
     ("post", "/v1/p/alice/sync", None, "sync"),
     ("post", "/v1/p/alice/backup", None, None),
     ("get", "/v1/admin/profiles", None, None),
@@ -801,3 +817,96 @@ def test_search_notes_needs_read(client: TestClient, store: Store) -> None:
     raw, _ = store.create_token(profile="alice", scopes=frozenset({"add"}))
     r = client.get("/v1/p/alice/notes", params={"query": "deck:*"}, headers=auth(raw))
     assert_error(r, 403, "forbidden")
+
+
+# ---- editing ----------------------------------------------------------------------------
+
+
+def test_patch_notes_html_roundtrip_and_stale(
+    client: TestClient, alice_token: str, seed_notes: Seeder
+) -> None:
+    [seeded] = seed_notes(1)
+    nid = seeded["note_id"]
+    found = client.get(
+        "/v1/p/alice/notes",
+        params={"query": f"nid:{nid}", "render": "html"},
+        headers=auth(alice_token),
+    ).json()["notes"][0]
+    body = {
+        "notes": [
+            {
+                "note_id": nid,
+                "fields": {"Back": "<i>meaning</i>"},
+                "add_tags": ["edited"],
+                "expected_mod": found["mod"],
+            },
+            {"note_id": nid, "fields": {"Back": "late"}, "expected_mod": found["mod"] - 1},
+        ]
+    }
+    r = client.patch("/v1/p/alice/notes", json=body, headers=auth(alice_token))
+    assert r.status_code == 200, r.text
+    first, stale = r.json()["results"]
+    assert first["status"] == "updated" and first["tags"] == ["edited"]
+    assert stale["status"] == "error" and stale["error"]["code"] == "stale"
+    tags = client.get("/v1/p/alice/tags", headers=auth(alice_token))
+    assert tags.json() == {"tags": ["edited"]} and "etag" in tags.headers
+    too_many = {"notes": [{"note_id": nid}] * 101}
+    r = client.patch("/v1/p/alice/notes", json=too_many, headers=auth(alice_token))
+    assert_error(r, 422, "validation_error")
+
+
+def test_delete_notes_needs_delete_scope_and_is_audited(
+    client: TestClient, store: Store, alice_token: str, seed_notes: Seeder
+) -> None:
+    nids = [r["note_id"] for r in seed_notes(2)]
+    r = client.post("/v1/p/alice/notes/delete", json={"note_ids": nids}, headers=auth(alice_token))
+    assert_error(r, 403, "forbidden")
+    deleter, _ = store.create_token(profile="alice", scopes=frozenset({"delete"}))
+    r = client.post(
+        "/v1/p/alice/notes/delete", json={"note_ids": [nids[0], 5]}, headers=auth(deleter)
+    )
+    assert r.status_code == 200, r.text
+    out = r.json()
+    assert [x["status"] for x in out["results"]] == ["deleted", "not_found"]
+    assert out["backup"].endswith("-pre-delete.anki2")
+    [row] = [x for x in store.audit_tail(10, profile="alice") if x["action"] == "delete_notes"]
+    assert row["count"] == 1
+    assert row["detail"] == f"note_ids={nids[0]} backup={out['backup']}"
+
+
+def test_cards_schedule_move_and_decks(
+    client: TestClient, alice_token: str, seed_notes: Seeder
+) -> None:
+    cid = seed_notes(1)[0]["card_ids"][0]
+    r = client.post(
+        "/v1/p/alice/cards/schedule",
+        json={"card_ids": [cid], "action": "set_due", "days": "2"},
+        headers=auth(alice_token),
+    )
+    assert r.status_code == 200, r.text
+    assert r.json()["results"][0]["queue"] == "review"
+    r = client.post(
+        "/v1/p/alice/cards/schedule",
+        json={"card_ids": [cid], "action": "set_due"},
+        headers=auth(alice_token),
+    )
+    assert_error(r, 400, "invalid_days")
+    r = client.post(
+        "/v1/p/alice/cards/schedule",
+        json={"card_ids": [cid], "action": "bury"},
+        headers=auth(alice_token),
+    )
+    assert_error(r, 422, "validation_error")
+    r = client.post(
+        "/v1/p/alice/cards/move",
+        json={"card_ids": [cid], "deck": "Moved::Here"},
+        headers=auth(alice_token),
+    )
+    assert r.json()["results"] == [{"card_id": cid, "status": "moved"}]
+    r = client.post("/v1/p/alice/decks", json={"name": "Empty"}, headers=auth(alice_token))
+    assert r.json()["created"] is True
+    names = {
+        d["name"]
+        for d in client.get("/v1/p/alice/decks", headers=auth(alice_token)).json()["decks"]
+    }
+    assert {"Moved::Here", "Empty"} <= names

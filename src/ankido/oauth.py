@@ -32,8 +32,10 @@ import httpx
 from ankido.config import Config
 from ankido.store import OAuthClient, Store, TokenRecord
 
-OAUTH_SCOPES: tuple[str, ...] = ("read", "add", "review", "sync")
+OAUTH_SCOPES: tuple[str, ...] = ("read", "add", "review", "sync", "delete")
 DEFAULT_SCOPES: tuple[str, ...] = ("read", "add", "review")
+# Never ticked in advance on the consent page, even when a client asks for it.
+OPT_IN_SCOPES: frozenset[str] = frozenset({"delete"})
 ACCESS_TTL = 3600
 REFRESH_TTL = 90 * 86400
 CODE_TTL = 300
@@ -93,7 +95,7 @@ def parse_scope(text: str | None) -> list[str]:
 
 
 def grantable_scopes(parent: TokenRecord) -> frozenset[str]:
-    """What a pasted token may hand out: its own scopes, or all four if it is an admin token."""
+    """What a pasted token may hand out: its own scopes, or all of them if it is an admin token."""
     if "admin" in parent.scopes:
         return frozenset(OAUTH_SCOPES)
     return frozenset(parent.scopes) & frozenset(OAUTH_SCOPES)

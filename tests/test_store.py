@@ -96,7 +96,7 @@ def test_parse_scopes() -> None:
     assert parse_scopes("read, review") == {"read", "review"}
     assert parse_scopes("admin") == {"admin"}
     with pytest.raises(ValueError, match="unknown scope"):
-        parse_scopes("read,delete")
+        parse_scopes("read,erase")
     with pytest.raises(ValueError, match="at least one scope"):
         parse_scopes(" , ")
 

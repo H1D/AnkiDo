@@ -101,6 +101,7 @@ class Session:
         self.last_sync_error: str | None = None
         self.full_sync_pending: bool = False
         self.schema_upgraded: bool = False
+        self.last_delete_backup_at: float | None = None
         if credentials:
             register_secret(credentials.password)
 

@@ -7,18 +7,25 @@ import hashlib
 import json
 import time
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
 from fastapi import APIRouter, Query, Request, Response
 from fastapi.responses import FileResponse, JSONResponse, PlainTextResponse
 
 from ankido.api.deps import Principal, authorize, authorize_admin, supervisor_of
 from ankido.api.schemas import (
+    CreateDeckRequest,
+    DeleteNotesRequest,
     ExchangeRequest,
+    MediaIn,
+    MoveCardsRequest,
     NotesRequest,
+    NoteUpdateIn,
     ReviewIn,
     ReviewsRequest,
+    ScheduleCardsRequest,
     SyncRequest,
+    UpdateNotesRequest,
     WantIn,
 )
 from ankido.collection import ops
@@ -42,15 +49,25 @@ def _etag_response(request: Request, payload: dict[str, Any], *, max_age: int = 
 
 
 def audit(
-    sup: Supervisor, p: Principal, action: str, outcome: str, count: int = 0, *, via: str | None
+    sup: Supervisor,
+    p: Principal,
+    action: str,
+    outcome: str,
+    count: int = 0,
+    *,
+    via: str | None,
+    detail: str | None = None,
 ) -> None:
+    parts = [f"via={via}"] if via else []
+    if detail:
+        parts.append(detail)
     sup.store.audit(
         token_id=p.token.id,
         profile=p.profile,
         action=action,
         outcome=outcome,
         count=count,
-        detail=f"via={via}" if via else None,
+        detail=" ".join(parts) or None,
     )
 
 
@@ -79,8 +96,8 @@ def add_notes(
                 tags=n.tags,
                 deck=n.deck,
                 model=n.model,
-                audio=[ops.MediaSpec(**m.model_dump(), kind="audio") for m in n.audio],
-                picture=[ops.MediaSpec(**m.model_dump(), kind="picture") for m in n.picture],
+                audio=_media_specs(n.audio, "audio"),
+                picture=_media_specs(n.picture, "picture"),
             )
             for n in body.notes
         ],
@@ -95,6 +112,139 @@ def add_notes(
         p.worker.note_write()
     audit(sup, p, "notes", "ok", len(results), via=via)
     return results
+
+
+@router.patch("/p/{profile}/notes")
+def patch_notes(profile: str, body: UpdateNotesRequest, request: Request) -> dict[str, Any]:
+    p = authorize(request, profile, "add", klass="write")
+    return {"results": update_notes(supervisor_of(request), p, body.notes, via=None)}
+
+
+def _media_specs(items: list[MediaIn], kind: Literal["audio", "picture"]) -> list[ops.MediaSpec]:
+    return [ops.MediaSpec(**m.model_dump(), kind=kind) for m in items]
+
+
+def update_notes(
+    sup: Supervisor, p: Principal, notes: list[NoteUpdateIn], *, via: str | None
+) -> list[dict[str, Any]]:
+    """``PATCH notes`` minus HTTP; the MCP ``update_notes`` tool runs this too."""
+    updates = [
+        ops.NoteUpdate(
+            **n.model_dump(exclude={"audio", "picture"}),
+            audio=_media_specs(n.audio, "audio"),
+            picture=_media_specs(n.picture, "picture"),
+        )
+        for n in notes
+    ]
+    results = p.worker.submit(
+        "update_notes",
+        lambda s: ops.update_notes(s, sup.media, updates),
+        priority=PRIORITY_WRITE,
+    )
+    changed = sum(r["status"] == "updated" for r in results)
+    if changed:
+        p.worker.note_write()
+    audit(sup, p, "update_notes", "ok", changed, via=via)
+    return results
+
+
+@router.post("/p/{profile}/notes/delete")
+def post_notes_delete(profile: str, body: DeleteNotesRequest, request: Request) -> dict[str, Any]:
+    p = authorize(request, profile, "delete", klass="write")
+    return delete_notes(supervisor_of(request), p, body.note_ids, via=None)
+
+
+def delete_notes(
+    sup: Supervisor, p: Principal, note_ids: list[int], *, via: str | None
+) -> dict[str, Any]:
+    """``POST notes/delete`` minus HTTP; the MCP ``delete_notes`` tool runs this too."""
+    # The first delete in an hour takes a backup, which can take a while on a big collection.
+    result = p.worker.submit(
+        "delete_notes",
+        lambda s: ops.delete_notes(s, note_ids),
+        priority=PRIORITY_WRITE,
+        timeout=300,
+    )
+    deleted = [str(r["note_id"]) for r in result["results"] if r["status"] == "deleted"]
+    if deleted:
+        p.worker.note_write()
+    detail = f"note_ids={','.join(deleted)}" if deleted else None
+    if result["backup"]:
+        detail = f"{detail} backup={result['backup']}"
+    audit(sup, p, "delete_notes", "ok", len(deleted), via=via, detail=detail)
+    return result
+
+
+@router.get("/p/{profile}/tags")
+def get_tags(profile: str, request: Request) -> Response:
+    p = authorize(request, profile, "read", klass="read")
+    result = p.worker.submit("tags", ops.list_tags, priority=PRIORITY_READ)
+    return _etag_response(request, {"tags": result})
+
+
+# ---- cards and decks --------------------------------------------------------------------
+
+
+@router.post("/p/{profile}/cards/schedule")
+def post_cards_schedule(
+    profile: str, body: ScheduleCardsRequest, request: Request
+) -> dict[str, Any]:
+    p = authorize(request, profile, "review", klass="write")
+    return {"results": reschedule_cards(supervisor_of(request), p, body, via=None)}
+
+
+def reschedule_cards(
+    sup: Supervisor, p: Principal, body: ScheduleCardsRequest, *, via: str | None
+) -> list[dict[str, Any]]:
+    """``POST cards/schedule`` minus HTTP; the MCP ``reschedule_cards`` tool runs this too."""
+    results = p.worker.submit(
+        "reschedule_cards",
+        lambda s: ops.reschedule_cards(s, body.card_ids, body.action, body.days),
+        priority=PRIORITY_WRITE,
+    )
+    done = sum(r["status"] == "ok" for r in results)
+    if done:
+        p.worker.note_write()
+    audit(sup, p, f"cards_{body.action}", "ok", done, via=via)
+    return results
+
+
+@router.post("/p/{profile}/cards/move")
+def post_cards_move(profile: str, body: MoveCardsRequest, request: Request) -> dict[str, Any]:
+    p = authorize(request, profile, "add", klass="write")
+    return move_cards(supervisor_of(request), p, body, via=None)
+
+
+def move_cards(
+    sup: Supervisor, p: Principal, body: MoveCardsRequest, *, via: str | None
+) -> dict[str, Any]:
+    """``POST cards/move`` minus HTTP; the MCP ``move_cards`` tool runs this too."""
+    result = p.worker.submit(
+        "move_cards",
+        lambda s: ops.move_cards(s, body.card_ids, body.deck),
+        priority=PRIORITY_WRITE,
+    )
+    moved = sum(r["status"] == "moved" for r in result["results"])
+    p.worker.note_write()  # the deck may have been created even if no card moved
+    audit(sup, p, "move_cards", "ok", moved, via=via)
+    return result
+
+
+@router.post("/p/{profile}/decks")
+def post_decks(profile: str, body: CreateDeckRequest, request: Request) -> dict[str, Any]:
+    p = authorize(request, profile, "add", klass="write")
+    return create_deck(supervisor_of(request), p, body.name, via=None)
+
+
+def create_deck(sup: Supervisor, p: Principal, name: str, *, via: str | None) -> dict[str, Any]:
+    """``POST decks`` minus HTTP; the MCP ``create_deck`` tool runs this too."""
+    result = p.worker.submit(
+        "create_deck", lambda s: ops.create_deck(s, name), priority=PRIORITY_WRITE
+    )
+    if result["created"]:
+        p.worker.note_write()
+    audit(sup, p, "create_deck", "ok", int(result["created"]), via=via)
+    return result
 
 
 # ---- reviews ----------------------------------------------------------------------------

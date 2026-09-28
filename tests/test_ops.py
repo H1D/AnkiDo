@@ -14,23 +14,31 @@ from anki.cards import CardId
 
 from ankido.collection.media import MediaResolver
 from ankido.collection.ops import (
+    DELETE_BACKUP_INTERVAL_SECONDS,
     AddNotesRequest,
     MediaSpec,
     NoteSpec,
+    NoteUpdate,
     QueueRequest,
     ReviewSpec,
     add_notes,
     answer_reviews,
     cards_info,
     cards_mod_time,
+    create_deck,
+    delete_notes,
     find_cards,
     find_notes,
     get_decks,
     get_queue,
     get_stats,
+    list_tags,
+    move_cards,
     notes_info,
     profile_status,
+    reschedule_cards,
     reviewed_today,
+    update_notes,
 )
 from ankido.collection.session import Session
 from ankido.errors import ApiError
@@ -717,3 +725,173 @@ def test_cards_info_notes_info_and_mod_time_shapes(
     assert cards_mod_time(col, []) == []
     mods = cards_mod_time(col, [cid, 1])
     assert mods == [{"cardId": cid, "mod": card["mod"]}]
+
+
+# ---- editing ----------------------------------------------------------------------------
+
+
+def test_update_notes_fields_tags_and_unchanged(
+    session: Session, store: Store, resolver: MediaResolver
+) -> None:
+    [added] = add_basic(session, store, resolver)
+    nid = added["note_id"]
+    [r] = update_notes(
+        session,
+        resolver,
+        [NoteUpdate(note_id=nid, fields={"Back": "<b>house</b>"}, add_tags=["a b"])],
+    )
+    assert r["status"] == "updated" and r["tags"] == ["a", "b"]
+    note = session.require().get_note(nid)
+    assert note["Back"] == "<b>house</b>" and note["Front"] == "word 0"
+    [r] = update_notes(session, resolver, [NoteUpdate(note_id=nid, remove_tags=["a"])])
+    assert r["tags"] == ["b"]
+    # Same values again: nothing to write.
+    [r] = update_notes(
+        session, resolver, [NoteUpdate(note_id=nid, fields={"Back": "<b>house</b>"})]
+    )
+    assert r["status"] == "unchanged"
+
+
+def test_update_notes_per_item_errors(
+    session: Session, store: Store, resolver: MediaResolver
+) -> None:
+    [added] = add_basic(session, store, resolver)
+    nid = added["note_id"]
+    mod = session.require().get_note(nid).mod
+    results = update_notes(
+        session,
+        resolver,
+        [
+            NoteUpdate(note_id=1, fields={"Back": "x"}),
+            NoteUpdate(note_id=nid, fields={"Nope": "x"}),
+            NoteUpdate(note_id=nid, fields={"Front": "  "}),
+            NoteUpdate(note_id=nid, fields={"Back": "ok"}, expected_mod=mod),
+            NoteUpdate(note_id=nid, fields={"Back": "late"}, expected_mod=mod - 1),
+        ],
+    )
+    assert [r["status"] for r in results] == ["error", "error", "error", "updated", "error"]
+    codes = [r["error"]["code"] for r in results if r["status"] == "error"]
+    assert codes == ["note_not_found", "unknown_field", "empty_first_field", "stale"]
+    assert results[1]["error"]["details"]["fields"] == ["Front", "Back"]
+    assert session.require().get_note(nid)["Back"] == "ok"
+
+
+def test_update_notes_guards_media(session: Session, store: Store, resolver: MediaResolver) -> None:
+    r = one(
+        session,
+        store,
+        resolver,
+        {"Front": "huis", "Back": 'house <img src="h.png">'},
+        audio=[MediaSpec(filename="huis.mp3", data=_b64(b"ID3a"))],
+    )
+    nid = r["note_id"]
+    [lost] = update_notes(
+        session, resolver, [NoteUpdate(note_id=nid, fields={"Front": "huis", "Back": "house"})]
+    )
+    assert lost["status"] == "error" and lost["error"]["code"] == "media_would_be_lost"
+    assert lost["error"]["details"] == {"field": "Front", "media": ["huis.mp3"]}
+    # Keeping the tags is fine, and allow_media_loss drops them on purpose.
+    [kept] = update_notes(
+        session,
+        resolver,
+        [NoteUpdate(note_id=nid, fields={"Back": "home <img src='h.png'>"})],
+    )
+    assert kept["status"] == "updated"
+    [dropped] = update_notes(
+        session,
+        resolver,
+        [NoteUpdate(note_id=nid, fields={"Back": "home"}, allow_media_loss=True)],
+    )
+    assert dropped["status"] == "updated"
+    assert session.require().get_note(nid)["Back"] == "home"
+
+
+def test_update_notes_attaches_media_once(
+    session: Session, store: Store, resolver: MediaResolver
+) -> None:
+    [added] = add_basic(session, store, resolver)
+    nid = added["note_id"]
+    upd = NoteUpdate(
+        note_id=nid,
+        audio=[MediaSpec(filename="w.mp3", data=_b64(b"ID3w"), fields=["Back"])],
+        picture=[MediaSpec(filename="w.png", data=_b64(b"\x89PNG"), kind="picture")],
+    )
+    [first] = update_notes(session, resolver, [upd])
+    assert first["status"] == "updated" and first["media"] == ["w.mp3", "w.png"]
+    [retry] = update_notes(session, resolver, [upd])
+    assert retry["status"] == "unchanged"
+    note = session.require().get_note(nid)
+    assert note["Back"] == "meaning 0[sound:w.mp3]"
+    assert note["Front"] == 'word 0<img src="w.png">'
+    [bad] = update_notes(
+        session,
+        resolver,
+        [NoteUpdate(note_id=nid, audio=[MediaSpec(data=_b64(b"x"), fields=["Nope"])])],
+    )
+    assert bad["error"]["code"] == "unknown_field"
+
+
+def test_delete_notes_backs_up_once_an_hour(
+    session: Session, store: Store, resolver: MediaResolver, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    added = add_basic(session, store, resolver, 3)
+    ids = [r["note_id"] for r in added]
+    out = delete_notes(session, [ids[0], 42, ids[0]])
+    assert out["results"] == [
+        {"note_id": ids[0], "status": "deleted"},
+        {"note_id": 42, "status": "not_found"},
+    ]
+    assert out["backup"] is not None and out["backup"].endswith("-pre-delete.anki2")
+    assert (session.backups_dir() / out["backup"]).is_file()
+    assert delete_notes(session, [ids[1]])["backup"] is None
+    assert delete_notes(session, [42])["backup"] is None  # nothing deleted, nothing backed up
+    later = time.time() + DELETE_BACKUP_INTERVAL_SECONDS + 1
+    monkeypatch.setattr(time, "time", lambda: later)
+    assert delete_notes(session, [ids[2]])["backup"] is not None
+    assert find_notes(session.require(), "deck:Test") == []
+
+
+def test_reschedule_cards(session: Session, store: Store, resolver: MediaResolver) -> None:
+    cids = first_cards(add_basic(session, store, resolver, 2))
+    out = reschedule_cards(session, [cids[0], 7], "suspend")
+    assert out[0]["status"] == "ok" and out[0]["queue"] == "suspended"
+    assert out[1] == {"card_id": 7, "status": "not_found"}
+    assert reschedule_cards(session, [cids[0]], "unsuspend")[0]["queue"] == "new"
+    [due] = reschedule_cards(session, [cids[1]], "set_due", "3!")
+    assert due["queue"] == "review" and due["interval_days"] == 3 and due["due"] is not None
+    [forgot] = reschedule_cards(session, [cids[1]], "forget")
+    assert forgot["queue"] == "new" and forgot["due"] is None
+    assert revlog_ids(session, cids[1]) != []  # set_due and forget log manual entries, not grades
+    for days in (None, "soon", "-1", "3-"):
+        with pytest.raises(ApiError) as ei:
+            reschedule_cards(session, cids, "set_due", days)
+        assert ei.value.code == "invalid_days"
+    with pytest.raises(ApiError) as ei:
+        reschedule_cards(session, cids, "bury")
+    assert ei.value.code == "invalid_action"
+
+
+def test_move_cards_create_deck_list_tags(
+    session: Session, store: Store, resolver: MediaResolver
+) -> None:
+    added = add_basic(session, store, resolver, 2)
+    cids = first_cards(added)
+    out = move_cards(session, [cids[0], 9], "Dutch::Verbs")
+    assert out["deck"] == "Dutch::Verbs"
+    assert [r["status"] for r in out["results"]] == ["moved", "not_found"]
+    col = session.require()
+    assert col.decks.name(col.get_card(CardId(cids[0])).current_deck_id()) == "Dutch::Verbs"
+
+    made = create_deck(session, "Empty")
+    assert made["name"] == "Empty" and made["created"] is True
+    again = create_deck(session, "Empty")
+    assert again == {**made, "created": False}
+    for bad in ("", " :: "):
+        with pytest.raises(ApiError) as ei:
+            create_deck(session, bad)
+        assert ei.value.code == "invalid_deck_name"
+
+    update_notes(
+        session, resolver, [NoteUpdate(note_id=added[0]["note_id"], add_tags=["zeta", "Alpha"])]
+    )
+    assert list_tags(session) == ["Alpha", "zeta"]

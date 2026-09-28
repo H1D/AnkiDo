@@ -140,7 +140,7 @@ def test_scope_enforced_per_action(
     )
     assert err(call("version", token=bob_token)) == "token lacks scope 'read' on profile 'alice'"
     assert err(call("deleteNotes", {"notes": []}, token=alice_token)).startswith(
-        "token lacks scope 'admin'"
+        "token lacks scope 'delete'"
     )
 
 
@@ -255,8 +255,23 @@ def test_tags_update_and_delete(call: Caller, alice_admin_token: str) -> None:
         ok(call("updateNoteFields", {"note": {"id": nid, "fields": {"Back": "changed"}}})) is None
     )
     assert ok(call("notesInfo", {"notes": [nid]}))[0]["fields"]["Back"]["value"] == "changed"
+    assert err(call("updateNoteFields", {"note": {"id": nid, "fields": {"Nope": "x"}}})).startswith(
+        "unknown field(s)"
+    )
+    assert err(call("updateNoteFields", {"note": {"id": 1, "fields": {"Back": "x"}}})) == (
+        "note 1 not found"
+    )
     assert ok(call("deleteNotes", {"notes": [nid]}, token=alice_admin_token)) is None
     assert ok(call("notesInfo", {"notes": [nid]})) == [{}]
+
+
+def test_delete_notes_with_delete_scope(call: Caller, store: Store) -> None:
+    nid, _ = add(call, "doomed")
+    deleter, _ = store.create_token(profile="alice", scopes=frozenset({"delete"}))
+    assert ok(call("deleteNotes", {"notes": [nid, 1]}, token=deleter)) is None
+    assert ok(call("notesInfo", {"notes": [nid]})) == [{}]
+    [row] = [e for e in store.audit_tail(10, profile="alice") if e["action"] == "delete_notes"]
+    assert row["detail"].startswith(f"via=ankiconnect note_ids={nid} backup=collection-")
 
 
 def test_suspend_due_set_due_date_and_forget(call: Caller) -> None:

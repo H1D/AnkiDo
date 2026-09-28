@@ -30,10 +30,11 @@ alias acurl='curl -sS -H "Authorization: Bearer $TOKEN" -H "Content-Type: applic
 
 | Scope | Grants |
 | --- | --- |
-| `read` | `GET queue`, `stats`, `decks`, `models`, `notes`, `media/*`, `sync/status`; shim read actions; MCP read tools |
-| `add` | `POST notes`; shim actions that create or modify notes, decks, tags, media; MCP `add_notes` |
-| `review` | `POST reviews`, `POST exchange`; shim `answerCards`, suspend, due-date changes; MCP `submit_reviews` |
+| `read` | `GET queue`, `stats`, `decks`, `models`, `notes`, `tags`, `media/*`, `sync/status`; shim read actions; MCP read tools |
+| `add` | `POST notes`, `PATCH notes`, `POST cards/move`, `POST decks`; shim actions that create or modify notes, decks, tags, media; MCP `add_notes`, `update_notes`, `move_cards`, `create_deck` |
+| `review` | `POST reviews`, `POST exchange`, `POST cards/schedule`; shim `answerCards`, suspend, due-date changes; MCP `submit_reviews`, `reschedule_cards` |
 | `sync` | `POST sync` (incremental); shim `sync` (`exchange` syncs inline without it); MCP `sync` |
+| `delete` | `POST notes/delete`; shim `deleteNotes`; MCP `delete_notes`. Not implied by `add`; grant it on purpose. |
 | `admin` | Everything above on the token's profile, `POST backup`, `force_full` sync, the `/v1/admin/*` endpoints (limited to the token's profile when bound). A token created with `--admin` has no profile binding and covers every profile. |
 
 A token is bound to one profile unless it was created with `--admin`. Using it on another profile
@@ -80,7 +81,12 @@ request, the token, or the configuration.
 | `rate_limited` | 429 | true | Token or profile bucket exhausted. `Retry-After` header; `details.retry_after_seconds`. |
 | `sync_required_full` | 409 | false | AnkiWeb demands a full sync. `details.required` is `full` or `full_upload`; `details.server_message`. See [schema-upgrade.md](schema-upgrade.md). |
 | `schema_upgrade_required` | 409 | false | Opening the collection would upgrade its schema and `allow_schema_upgrade` is off. `details.current`, `details.required`. |
-| `conflict` | 409 | false | Reserved; not raised by 0.1. |
+| `conflict` | 409 | false | Generic. |
+| `stale` | 409 | false | Per note in `PATCH notes`: the note changed after the `expected_mod` it was read at. `details.mod`. |
+| `note_not_found` | 404 | false | Per note in `PATCH notes`: no note with that id. |
+| `media_would_be_lost` | 400 | false | Per note in `PATCH notes`: the new value drops media the field referenced. `details.field`, `details.media`. |
+| `invalid_days` | 400 | false | `cards/schedule` with `set_due` and a `days` value other than `N`, `N-M` or `N!`. |
+| `invalid_deck_name` | 400 | false | Empty deck name. |
 | `confirmation_required` | 400 | false | `force_full` without `confirm` equal to the profile name. |
 | `sync_not_configured` | 400 | false | Profile has no AnkiWeb credentials. |
 | `sync_auth_failed` | 502 | false | AnkiWeb rejected the username or password. |
@@ -545,6 +551,145 @@ acurl "$ANKIDO/v1/p/alice/notes?query=tag:verbs&limit=2"
 
 `decks` lists the decks of the note's cards. `next_offset` is `null` on the last page. A query
 Anki cannot parse yields `400 invalid_search`.
+
+---
+
+## `PATCH /v1/p/{profile}/notes`
+
+Scope `add`. Rate bucket `write`. Edits up to 100 existing notes: field values, tags, and new
+audio or pictures. Fields not listed keep their value. The result is per note, in request order.
+
+```json
+{
+  "notes": [
+    {
+      "note_id": 1758000123456,
+      "fields": {"Back": "to walk, <i>to run</i>"},
+      "add_tags": ["reviewed"],
+      "remove_tags": ["todo"],
+      "audio": [{"filename": "lopen.mp3", "data": "<base64>", "fields": ["Front"]}],
+      "expected_mod": 1790000000
+    }
+  ]
+}
+```
+
+| Field | Default | Meaning |
+| --- | --- | --- |
+| `note_id` | required | From `GET notes` or `POST notes`. |
+| `fields` | `{}` | Field name → new value. Values are stored as given (HTML). |
+| `add_tags`, `remove_tags` | `[]` | Tags to add or remove. |
+| `audio`, `picture` | `[]` | Attachments, as in `POST notes`; appended to the listed fields (default: the first field). A file already referenced in the field is not appended twice, so a retry is harmless. |
+| `expected_mod` | none | The note's `mod` from `GET notes`. If the note changed since, it is not touched and the result is `stale`. `mod` has one-second resolution. |
+| `allow_media_loss` | `false` | Allow a new field value to drop `[sound:…]` or `<img>` references the field had. |
+
+```json
+{
+  "results": [
+    {"status": "updated", "note_id": 1758000123456, "mod": 1790000500, "tags": ["reviewed", "verbs"], "media": ["lopen.mp3"]},
+    {"status": "error", "note_id": 1758000999999, "error": {"code": "note_not_found", "message": "note 1758000999999 not found", "retryable": false}}
+  ]
+}
+```
+
+`status` is `updated`, `unchanged` (nothing differed) or `error`. Per-note error codes:
+`note_not_found`, `stale` (`details.mod` is the current value), `unknown_field`,
+`empty_first_field`, `media_would_be_lost` (`details.field`, `details.media`), and the media
+codes of `POST notes`.
+
+Read fields with `render=html` before editing them. Writing back the plain-text rendering would
+strip formatting; if it would also drop media, the edit is refused with `media_would_be_lost`.
+
+---
+
+## `POST /v1/p/{profile}/notes/delete`
+
+Scope `delete`. Rate bucket `write`. Deletes up to 100 notes with their cards and review history.
+
+```json
+{"note_ids": [1758000123456, 1758000999999]}
+```
+
+```json
+{
+  "results": [
+    {"note_id": 1758000123456, "status": "deleted"},
+    {"note_id": 1758000999999, "status": "not_found"}
+  ],
+  "backup": "collection-20260928-101500.123-pre-delete.anki2"
+}
+```
+
+Before the first delete in an hour Ankido backs up the collection into the profile's `backups/`
+directory (the file name is in `backup`, otherwise `null`); restoring one is described in
+[schema-upgrade.md](schema-upgrade.md#backups). The audit log records the deleted ids and the backup name. After the next
+sync the deletion reaches every device.
+
+---
+
+## `GET /v1/p/{profile}/tags`
+
+Scope `read`. Rate bucket `read`. `ETag` supported. Every tag in the collection, sorted.
+
+```json
+{"tags": ["noun", "verbs"]}
+```
+
+---
+
+## `POST /v1/p/{profile}/cards/schedule`
+
+Scope `review`. Rate bucket `write`. Changes the scheduling of up to 100 cards without recording
+a review, as the Browse screen's Suspend, Forget and Set Due Date do. Use it when the schedule is
+wrong rather than the answer; grading a card Again to push it back records a lapse.
+
+```json
+{"card_ids": [1758000123457], "action": "set_due", "days": "3-7"}
+```
+
+| `action` | Effect |
+| --- | --- |
+| `suspend` | Skip the card in reviews until unsuspended. |
+| `unsuspend` | Return it to its queue. |
+| `forget` | Reset to a new card. |
+| `set_due` | Due in `days`: `"0"` today, `"3"`, `"3-7"` (random day in range), `"7!"` (also set the interval to 7 days). Other values: `400 invalid_days`. |
+
+```json
+{"results": [{"card_id": 1758000123457, "status": "ok", "interval_days": 5, "due": 1790400000, "queue": "review", "type": "review"}]}
+```
+
+Unknown ids come back as `{"card_id": …, "status": "not_found"}`.
+
+---
+
+## `POST /v1/p/{profile}/cards/move`
+
+Scope `add`. Rate bucket `write`. Moves up to 100 cards to a deck, creating it if needed.
+
+```json
+{"card_ids": [1758000123457], "deck": "Dutch::Verbs"}
+```
+
+```json
+{"deck": "Dutch::Verbs", "results": [{"card_id": 1758000123457, "status": "moved"}]}
+```
+
+---
+
+## `POST /v1/p/{profile}/decks`
+
+Scope `add`. Rate bucket `write`. Creates an empty deck; `::` nests. If the deck exists it is
+returned with `created: false`. `POST notes` and `cards/move` create decks on their own.
+
+```json
+{"name": "Dutch::Verbs"}
+```
+
+```json
+{"deck_id": 1758000000200, "name": "Dutch::Verbs", "created": true}
+```
+
+An empty name yields `400 invalid_deck_name`.
 
 ---
 

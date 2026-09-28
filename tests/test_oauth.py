@@ -381,6 +381,30 @@ def test_admin_token_can_grant_everything_but_admin(client: TestClient, store: S
     assert tok["scope"] == "read add review sync"
 
 
+def test_delete_scope_is_never_pre_ticked(client: TestClient, store: Store) -> None:
+    parent, _ = store.create_token(profile="alice", scopes=frozenset({"read", "delete"}))
+    reg = register(client)
+    verifier, challenge = pkce()
+    page = client.get(
+        "/oauth/authorize",
+        params={
+            "response_type": "code",
+            "client_id": reg["client_id"],
+            "redirect_uri": CALLBACK,
+            "code_challenge": challenge,
+            "code_challenge_method": "S256",
+            "state": "st4te",
+            "scope": "read delete",
+            "resource": RESOURCE,
+        },
+    ).text
+    assert 'value="read" checked' in page
+    assert 'value="delete">' in page  # offered, not checked
+    form = open_consent(client, reg["client_id"], challenge, scope="read delete")
+    code = query(approve(client, form, parent, ["read", "delete"]))["code"]
+    assert exchange(client, reg, code, verifier).json()["scope"] == "read delete"
+
+
 def test_authorize_errors(client: TestClient) -> None:
     reg = register(client)
     _, challenge = pkce()

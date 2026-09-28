@@ -7,7 +7,7 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
-from ankido.collection.ops import KINDS
+from ankido.collection.ops import KINDS, MAX_EDIT_ITEMS
 
 
 class MediaIn(BaseModel):
@@ -85,3 +85,43 @@ class SyncRequest(BaseModel):
     force_full: Literal["upload", "download"] | None = None
     confirm: str | None = None
     wait: bool = True
+
+
+class NoteUpdateIn(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    note_id: int
+    fields: dict[str, str] = Field(default_factory=dict)
+    add_tags: list[str] = Field(default_factory=list)
+    remove_tags: list[str] = Field(default_factory=list)
+    audio: list[MediaIn] = Field(default_factory=list)
+    picture: list[MediaIn] = Field(default_factory=list)
+    expected_mod: int | None = None
+    allow_media_loss: bool = False
+
+
+class UpdateNotesRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    notes: list[NoteUpdateIn] = Field(min_length=1, max_length=MAX_EDIT_ITEMS)
+
+
+class DeleteNotesRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    note_ids: list[int] = Field(min_length=1, max_length=MAX_EDIT_ITEMS)
+
+
+class ScheduleCardsRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    card_ids: list[int] = Field(min_length=1, max_length=MAX_EDIT_ITEMS)
+    action: Literal["suspend", "unsuspend", "forget", "set_due"]
+    days: str | None = Field(default=None, max_length=20)
+
+
+class MoveCardsRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    card_ids: list[int] = Field(min_length=1, max_length=MAX_EDIT_ITEMS)
+    deck: str = Field(min_length=1, max_length=500)
+
+
+class CreateDeckRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    name: str = Field(min_length=1, max_length=500)

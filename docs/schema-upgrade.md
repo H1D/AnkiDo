@@ -63,6 +63,8 @@ Ankido writes a backup of the collection file to `<data_dir>/<profile>/backups/`
 - before an automatic full download (`pre-bootstrap`), only if the collection is not completely
   empty; since the automatic download itself only happens into an empty collection, this one is
   rarely written;
+- before the first note deletion in an hour (`pre-delete`), through `POST notes/delete`, the
+  MCP `delete_notes` tool or the shim's `deleteNotes`;
 - on request: `POST /v1/p/{profile}/backup` (admin token) or `ankido backup <profile>` with the
   service stopped (`manual`).
 
@@ -73,7 +75,8 @@ it is the `collection.media/` directory next to the collection and is re-fetched
 the next media sync.
 
 `backups.keep` (default 10) limits how many are kept per profile; the oldest are deleted after
-each new backup. These backups live on the same disk as the collection. For real safety, copy
+each new backup, whatever their reason, so a day of hourly `pre-delete` backups rotates out older
+ones. Copy a backup you want to keep elsewhere. These backups live on the same disk as the collection. For real safety, copy
 `data_dir` elsewhere on a schedule (see [deploy.md](deploy.md#backups-and-retention)); AnkiWeb
 holds another copy of everything that has synced.
 

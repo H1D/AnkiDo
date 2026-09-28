@@ -18,11 +18,11 @@ import anyio
 from anki.cards import CardId
 from anki.collection import Collection
 from anki.errors import NotFoundError
-from anki.notes import NoteId
 from fastapi import APIRouter, Request
 from fastapi.responses import JSONResponse
 
-from ankido.api.deps import bearer_from, supervisor_of
+from ankido.api import v1
+from ankido.api.deps import Principal, bearer_from, supervisor_of
 from ankido.collection import ops
 from ankido.collection.session import Session
 from ankido.errors import ApiError, Unauthorized
@@ -109,9 +109,7 @@ def _deck_names_and_ids(s: Session, p: dict[str, Any]) -> dict[str, int]:
 
 @action("createDeck", "add", PRIORITY_WRITE)
 def _create_deck(s: Session, p: dict[str, Any]) -> int:
-    did = _col(s).decks.id(str(p["deck"]), create=True)
-    assert did is not None
-    return int(did)
+    return int(ops.create_deck(s, str(p["deck"]))["deck_id"])
 
 
 @action("deleteDecks", "admin", PRIORITY_WRITE)
@@ -147,10 +145,7 @@ def _get_decks(s: Session, p: dict[str, Any]) -> dict[str, list[int]]:
 
 @action("changeDeck", "add", PRIORITY_WRITE)
 def _change_deck(s: Session, p: dict[str, Any]) -> None:
-    col = _col(s)
-    did = col.decks.id(str(p["deck"]), create=True)
-    assert did is not None
-    col.set_deck([CardId(c) for c in _ids(p, "cards")], did)
+    ops.move_cards(s, _ids(p, "cards"), str(p["deck"]))
 
 
 # ---- models -----------------------------------------------------------------------------
@@ -284,32 +279,46 @@ def _notes_info(s: Session, p: dict[str, Any]) -> list[dict[str, Any]]:
 
 @action("updateNoteFields", "add", PRIORITY_WRITE)
 def _update_note_fields(s: Session, p: dict[str, Any]) -> None:
-    col = _col(s)
     raw = p["note"]
-    note = col.get_note(NoteId(int(raw["id"])))
-    for k, v in (raw.get("fields") or {}).items():
-        note[str(k)] = str(v)
-    col.update_note(note)
+    fields = {str(k): str(v) for k, v in (raw.get("fields") or {}).items()}
+    # AnkiConnect clients expect last-write-wins and may drop media on purpose.
+    update = ops.NoteUpdate(note_id=int(raw["id"]), fields=fields, allow_media_loss=True)
+    (result,) = ops.update_notes(s, None, [update])
+    if result["status"] == "error":
+        err = result["error"]
+        raise ApiError(err["message"], code=err["code"], details=err.get("details"))
 
 
-@action("deleteNotes", "admin", PRIORITY_WRITE)
+@action("deleteNotes", "delete", PRIORITY_WRITE)
 def _delete_notes(s: Session, p: dict[str, Any]) -> None:
-    _col(s).remove_notes([NoteId(n) for n in _ids(p, "notes")])
+    # _run_action goes through v1.delete_notes instead, for its audit detail and backup timeout.
+    ops.delete_notes(s, _ids(p, "notes"))
+
+
+def _retag(s: Session, p: dict[str, Any], *, remove: bool) -> None:
+    tags = str(p.get("tags", "")).split()
+    updates = [
+        ops.NoteUpdate(
+            note_id=n, add_tags=[] if remove else tags, remove_tags=tags if remove else []
+        )
+        for n in _ids(p, "notes")
+    ]
+    ops.update_notes(s, None, updates)  # unknown notes are ignored, as in AnkiConnect
 
 
 @action("addTags", "add", PRIORITY_WRITE)
 def _add_tags(s: Session, p: dict[str, Any]) -> None:
-    _col(s).tags.bulk_add([NoteId(n) for n in _ids(p, "notes")], str(p.get("tags", "")))
+    _retag(s, p, remove=False)
 
 
 @action("removeTags", "add", PRIORITY_WRITE)
 def _remove_tags(s: Session, p: dict[str, Any]) -> None:
-    _col(s).tags.bulk_remove([NoteId(n) for n in _ids(p, "notes")], str(p.get("tags", "")))
+    _retag(s, p, remove=True)
 
 
 @action("getTags", "read")
 def _get_tags(s: Session, p: dict[str, Any]) -> list[str]:
-    return _col(s).tags.all()
+    return ops.list_tags(s)
 
 
 # ---- cards ------------------------------------------------------------------------------
@@ -346,13 +355,13 @@ def _cards_to_notes(s: Session, p: dict[str, Any]) -> list[int]:
 
 @action("suspend", "review", PRIORITY_WRITE)
 def _suspend(s: Session, p: dict[str, Any]) -> bool:
-    _col(s).sched.suspend_cards([CardId(c) for c in _ids(p, "cards")])
+    ops.reschedule_cards(s, _ids(p, "cards"), "suspend")
     return True
 
 
 @action("unsuspend", "review", PRIORITY_WRITE)
 def _unsuspend(s: Session, p: dict[str, Any]) -> bool:
-    _col(s).sched.unsuspend_cards([CardId(c) for c in _ids(p, "cards")])
+    ops.reschedule_cards(s, _ids(p, "cards"), "unsuspend")
     return True
 
 
@@ -395,13 +404,13 @@ def _get_intervals(s: Session, p: dict[str, Any]) -> list[Any]:
 
 @action("setDueDate", "review", PRIORITY_WRITE)
 def _set_due_date(s: Session, p: dict[str, Any]) -> bool:
-    _col(s).sched.set_due_date([CardId(c) for c in _ids(p, "cards")], str(p["days"]))
+    ops.reschedule_cards(s, _ids(p, "cards"), "set_due", str(p["days"]))
     return True
 
 
 @action("forgetCards", "review", PRIORITY_WRITE)
 def _forget_cards(s: Session, p: dict[str, Any]) -> None:
-    _col(s).sched.schedule_cards_as_new([CardId(c) for c in _ids(p, "cards")])
+    ops.reschedule_cards(s, _ids(p, "cards"), "forget")
 
 
 @action("getNumCardsReviewedToday", "read")
@@ -500,6 +509,10 @@ def _run_action(
 
     if name == "answerCards":
         return _answer_cards(request, worker, token, params)
+    if name == "deleteNotes":
+        principal = Principal(token=token, worker=worker, profile=worker.name)
+        v1.delete_notes(sup, principal, _ids(params, "notes"), via="ankiconnect")
+        return None
     if name == "addNote":
         result = worker.submit(
             name, lambda s: _add_note_impl(s, sup, params["note"]), priority=prio

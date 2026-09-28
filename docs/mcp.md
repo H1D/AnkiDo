@@ -2,9 +2,10 @@
 
 Ankido serves the [Model Context Protocol](https://modelcontextprotocol.io) at
 `/mcp/p/{profile}`, one endpoint per profile. An agent (Claude Code, claude.ai, VS Code, Cursor,
-anything that speaks MCP over HTTP) can then add notes, search the collection, run a review
-session in chat and read stats, with the same rules as `/v1`: Anki owns scheduling, writes are
-idempotent by `client_id`, every call is scoped and rate-limited, and nothing does a full sync.
+anything that speaks MCP over HTTP) can then add and edit notes, search the collection, run a
+review session in chat, suspend or reschedule cards and read stats, with the same rules as `/v1`:
+Anki owns scheduling, writes are safe to retry, every call is scoped and rate-limited, and
+nothing does a full sync.
 
 - Transport: Streamable HTTP, stateless. Protocol `2026-07-28` clients send self-contained
   requests. Older clients (`2025-11-25` and earlier) still get the `initialize` handshake, but no
@@ -22,12 +23,18 @@ Calls are checked again when they arrive, so an unlisted tool fails with `forbid
 | --- | --- | --- | --- |
 | `list_decks` | `read` | `GET /v1/p/{p}/decks` | Decks with hierarchy and new/learning/due counts. |
 | `list_note_types` | `read` | `GET /v1/p/{p}/models` | Note types with field names in order and template names. |
-| `search_notes` | `read` | `GET /v1/p/{p}/notes?query=` | Anki search syntax, newest first, fields as plain text. `limit`, `offset`. |
+| `search_notes` | `read` | `GET /v1/p/{p}/notes?query=` | Anki search syntax, newest first, with `note_id`, `card_ids`, `tags`, `mod`. Fields as plain text, or as stored with `format: "html"`. `limit`, `offset`. |
 | `get_stats` | `read` | `GET /v1/p/{p}/stats` | Reviews per day (default 30 days), today's count, per-deck counts, `day_rollover_hour`. |
 | `get_queue` | `read` | `GET /v1/p/{p}/queue` | Cards to study now: `q`, `a` as plain text, `next` intervals per grade. `decks`, `kinds`, `limit`, `cursor`. |
+| `list_tags` | `read` | `GET /v1/p/{p}/tags` | Every tag in the collection. |
 | `sync_status` | `read` | `GET /v1/p/{p}/sync/status` | Last sync, errors, whether a full sync is pending. |
 | `add_notes` | `add` | `POST /v1/p/{p}/notes` | Add notes, deduplicated on the first field. Media as base64 `data` or allowlisted `url`. |
+| `update_notes` | `add` | `PATCH /v1/p/{p}/notes` | Edit fields (HTML), add or remove tags, attach audio or pictures. `expected_mod` refuses stale edits. |
+| `move_cards` | `add` | `POST /v1/p/{p}/cards/move` | Move cards to a deck, created if missing. |
+| `create_deck` | `add` | `POST /v1/p/{p}/decks` | Create an empty deck. |
 | `submit_reviews` | `review` | `POST /v1/p/{p}/reviews` | Grade cards 1 to 4; Anki computes the next interval. |
+| `reschedule_cards` | `review` | `POST /v1/p/{p}/cards/schedule` | Suspend, unsuspend, forget, or set the due date, without recording a review. |
+| `delete_notes` | `delete` | `POST /v1/p/{p}/notes/delete` | Delete notes and their cards. Backs up the collection first (at most once an hour). |
 | `sync` | `sync` | `POST /v1/p/{p}/sync` | Incremental sync with AnkiWeb. |
 
 Differences from `/v1`:
@@ -35,8 +42,29 @@ Differences from `/v1`:
 - `add_notes` does not accept `path` media. A remote agent has no business reading files on
   the server.
 - `get_queue` always returns compact plain text; `search_notes` always returns plain-text fields.
+- `update_notes` accepts `data` and `url` media only, like `add_notes`.
 - `exchange`, media download, backups, forced full syncs and the admin endpoints are not
-  exposed. An `admin` token sees the same nine tools as a `read,add,review,sync` token.
+  exposed. An `admin` token sees the same fifteen tools as a `read,add,review,sync,delete`
+  token.
+
+Tool annotations tell clients what each tool does: read tools are `readOnlyHint`,
+`delete_notes` is `destructiveHint`, so clients that ask before destructive calls will ask.
+
+### Editing notes
+
+`update_notes` writes field values as HTML. An agent that edits the plain text it got from
+`search_notes` would strip bold, line breaks and media, so the server instructions tell it to
+read with `format: "html"` first and to pass the note's `mod` as `expected_mod`. Two checks
+back that up:
+
+- `stale`: the note changed after it was read (on your phone, say). The note is left alone and
+  the agent reads it again.
+- `media_would_be_lost`: the new value drops a `[sound:…]` or `<img>` the field had. The agent
+  has to keep the tags, or pass `allow_media_loss: true` if you asked to remove them.
+
+Attaching the same file twice to a field is skipped, so retrying `update_notes` is harmless.
+New notes and reviews still need a `client_id` for that; edits, moves, suspends and deletes do
+not. The exception is `reschedule_cards` with a range such as `"3-7"`: a retry draws a new day.
 
 Tool results carry `structuredContent` (the same JSON the `/v1` endpoint returns) and a text
 copy. Failures come back as a tool result with `isError: true` whose text is the usual error
@@ -53,7 +81,9 @@ exactly as in `/v1`.
 
 `review_session` (optional argument `deck`) tells the agent how to quiz you: show the question
 only, wait for your answer, reveal it, agree on a grade, submit grades in small batches with
-unique `client_id`s, and never compute intervals itself. In clients that list prompts it shows
+unique `client_id`s, and never compute intervals itself. With your agreement it may fix a
+mistake in a card or suspend one you keep failing; it never deletes during a review. In clients
+that list prompts it shows
 up as a command (in Claude Code: `/mcp__ankido__review_session`).
 
 ## Authentication
@@ -146,7 +176,10 @@ What happens next:
 Rules for what the client gets:
 
 - At most the scopes of the token you pasted, and never `admin`. An admin token can grant
-  `read`, `add`, `review` and `sync`.
+  `read`, `add`, `review`, `sync` and `delete`.
+- `delete` is never ticked in advance, even when the client asks for it. Tick it yourself if
+  you want the agent to be able to delete notes; the pasted token must have `delete` (or be an
+  admin token).
 - Only for the one URL it asked for. An OAuth token does not work on `/v1`, on the AnkiConnect
   shim, or on another profile's MCP endpoint.
 - It never outlives the pasted token: if that token expires or is revoked, the client is

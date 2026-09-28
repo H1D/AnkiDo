@@ -7,6 +7,35 @@ public contract; the AnkiConnect shim follows AnkiConnect's own dialect.
 
 ## [Unreleased]
 
+## [0.3.0] - 2026-09-28
+
+### Added
+
+- Editing over `/v1` and MCP, with one implementation shared by `/v1`, MCP and the AnkiConnect
+  shim:
+  - `PATCH /v1/p/{profile}/notes` / MCP `update_notes` (scope `add`): field values, tags,
+    new audio or pictures. Optional `expected_mod` refuses the edit with `stale` if the note
+    changed since it was read; an edit that would drop `[sound:…]` or `<img>` references is
+    refused with `media_would_be_lost` unless `allow_media_loss` is set. Re-attaching the same
+    file is skipped, so retries are harmless.
+  - `POST /v1/p/{profile}/notes/delete` / MCP `delete_notes` (new scope `delete`). The first
+    delete in an hour writes a `pre-delete` backup; the audit entry lists the deleted ids.
+  - `POST /v1/p/{profile}/cards/schedule` / MCP `reschedule_cards` (scope `review`): suspend,
+    unsuspend, forget, set due date.
+  - `POST /v1/p/{profile}/cards/move` / MCP `move_cards` and `POST /v1/p/{profile}/decks` /
+    MCP `create_deck` (scope `add`).
+  - `GET /v1/p/{profile}/tags` / MCP `list_tags` (scope `read`).
+- MCP `search_notes` takes `format: "html"` to return fields as stored.
+- Scope `delete`. OAuth clients can be granted it, but the consent page never ticks it in
+  advance.
+
+### Changed
+
+- The shim's `deleteNotes` needs `delete` instead of `admin` (admin tokens still work) and takes
+  the `pre-delete` backup. `updateNoteFields` reports unknown fields and missing notes as errors.
+- The `review_session` prompt lets the agent offer to fix a card or suspend a leech, with the
+  user's agreement; it never deletes.
+
 ### Removed
 
 - PyPI publishing. It was never set up, so `ankido` was never on PyPI. Install without
@@ -90,6 +119,7 @@ First release.
 - Documentation: quickstart, API reference, AnkiConnect shim, client guide, deployment,
   schema-upgrade and full-sync policy, migration.
 
-[Unreleased]: https://github.com/H1D/AnkiDo/compare/v0.2.0...HEAD
+[Unreleased]: https://github.com/H1D/AnkiDo/compare/v0.3.0...HEAD
+[0.3.0]: https://github.com/H1D/AnkiDo/compare/v0.2.0...v0.3.0
 [0.2.0]: https://github.com/H1D/AnkiDo/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/H1D/AnkiDo/releases/tag/v0.1.0

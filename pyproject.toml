@@ -1,6 +1,6 @@
 [project]
 name = "ankido"
-version = "0.2.0"
+version = "0.3.0"
 description = "Headless, multi-account HTTP API for AnkiWeb collections."
 readme = "README.md"
 license = "AGPL-3.0-or-later"

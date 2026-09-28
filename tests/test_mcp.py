@@ -27,25 +27,28 @@ pytestmark = pytest.mark.anyio
 # "legacy" = initialize handshake (2025-11-25 and older), "2026-07-28" = stateless, no handshake.
 MODES = ["legacy", "2026-07-28"]
 ORIGIN = "https://anki.example.com"
-ALL_TOOLS = {
-    "list_decks",
-    "list_note_types",
-    "search_notes",
-    "get_stats",
-    "get_queue",
-    "sync_status",
-    "add_notes",
-    "submit_reviews",
-    "sync",
-}
 READ_TOOLS = {
     "list_decks",
     "list_note_types",
     "search_notes",
     "get_stats",
     "get_queue",
+    "list_tags",
     "sync_status",
 }
+REVIEW_TOOLS = {"submit_reviews", "reschedule_cards"}
+# Everything a read,add,review,sync token sees; delete_notes needs the delete scope.
+ALL_TOOLS = (
+    READ_TOOLS
+    | REVIEW_TOOLS
+    | {
+        "add_notes",
+        "update_notes",
+        "move_cards",
+        "create_deck",
+        "sync",
+    }
+)
 
 
 @pytest.fixture
@@ -104,12 +107,19 @@ def tokens(store: Store, **scopes: str) -> dict[str, str]:
 
 @pytest.mark.parametrize("mode", MODES)
 async def test_tool_list_follows_token_scopes(mcp_app: FastAPI, store: Store, mode: str) -> None:
-    t = tokens(store, ro="read", full="read,add,review,sync", adm="admin", rev="read,review")
+    t = tokens(
+        store,
+        ro="read",
+        full="read,add,review,sync",
+        adm="admin",
+        rev="read,review",
+        dele="read,delete",
+    )
     async with running(mcp_app):
         async with mcp_client(mcp_app, t["ro"], mode) as c:
             assert {x.name for x in (await c.list_tools()).tools} == READ_TOOLS
         async with mcp_client(mcp_app, t["rev"], mode) as c:
-            assert {x.name for x in (await c.list_tools()).tools} == READ_TOOLS | {"submit_reviews"}
+            assert {x.name for x in (await c.list_tools()).tools} == READ_TOOLS | REVIEW_TOOLS
         async with mcp_client(mcp_app, t["full"], mode) as c:
             listed = {x.name: x for x in (await c.list_tools()).tools}
             assert set(listed) == ALL_TOOLS
@@ -118,8 +128,14 @@ async def test_tool_list_follows_token_scopes(mcp_app: FastAPI, store: Store, mo
             ann = listed["add_notes"].annotations
             assert ann is not None and ann.read_only_hint is False
             assert ann.destructive_hint is False
+            assert "delete_notes" not in listed
+        async with mcp_client(mcp_app, t["dele"], mode) as c:
+            assert {x.name for x in (await c.list_tools()).tools} == READ_TOOLS | {"delete_notes"}
         async with mcp_client(mcp_app, t["adm"], mode) as c:
-            assert {x.name for x in (await c.list_tools()).tools} == ALL_TOOLS
+            listed = {x.name: x for x in (await c.list_tools()).tools}
+            assert set(listed) == ALL_TOOLS | {"delete_notes"}
+            ann = listed["delete_notes"].annotations
+            assert ann is not None and ann.destructive_hint is True
 
 
 @pytest.mark.parametrize("mode", MODES)
@@ -275,6 +291,71 @@ async def test_review_session_prompt(mcp_app: FastAPI, store: Store) -> None:
         block = got.messages[0].content
         assert isinstance(block, TextContent)
         assert 'decks=["Dutch"]' in block.text and "submit_reviews" in block.text
+        assert "Never delete notes" in block.text
+
+
+@pytest.mark.parametrize("mode", MODES)
+async def test_edit_reschedule_move_and_delete(mcp_app: FastAPI, store: Store, mode: str) -> None:
+    t = tokens(store, full="read,add,review", dele="read,delete")
+    async with running(mcp_app):
+        async with mcp_client(mcp_app, t["full"], mode) as c:
+            added = data(
+                await c.call_tool(
+                    "add_notes",
+                    {
+                        "deck": "Dutch",
+                        "notes": [{"fields": {"Front": "de <b>kat</b>", "Back": "cat"}}],
+                    },
+                )
+            )["results"][0]
+            found = data(
+                await c.call_tool("search_notes", {"query": "deck:Dutch", "format": "html"})
+            )["notes"][0]
+            assert found["fields"]["Front"] == "de <b>kat</b>"
+            edit = {
+                "note_id": added["note_id"],
+                "fields": {"Back": "the cat"},
+                "add_tags": ["animals"],
+                "expected_mod": found["mod"],
+                "audio": [{"filename": "kat.mp3", "data": base64.b64encode(b"ID3k").decode()}],
+            }
+            [r] = data(await c.call_tool("update_notes", {"notes": [edit]}))["results"]
+            assert r["status"] == "updated" and r["media"] == ["kat.mp3"]
+            retry_edit = {**edit, "expected_mod": r["mod"]}
+            [retry] = data(await c.call_tool("update_notes", {"notes": [retry_edit]}))["results"]
+            assert retry["status"] == "unchanged"  # same values, audio already attached
+            late = {**edit, "fields": {"Back": "a cat"}, "expected_mod": found["mod"] - 1}
+            [stale] = data(await c.call_tool("update_notes", {"notes": [late]}))["results"]
+            assert stale["error"]["code"] == "stale"
+            assert data(await c.call_tool("list_tags", {}))["tags"] == ["animals"]
+
+            cid = added["card_ids"][0]
+            [s] = data(
+                await c.call_tool("reschedule_cards", {"card_ids": [cid], "action": "suspend"})
+            )["results"]
+            assert s["queue"] == "suspended"
+            err = error(
+                await c.call_tool("reschedule_cards", {"card_ids": [cid], "action": "set_due"})
+            )
+            assert err["code"] == "invalid_days"
+            moved = data(await c.call_tool("move_cards", {"card_ids": [cid], "deck": "Pets"}))
+            assert moved["results"] == [{"card_id": cid, "status": "moved"}]
+            assert data(await c.call_tool("create_deck", {"name": "Empty"}))["created"] is True
+
+            err = error(await c.call_tool("delete_notes", {"note_ids": [added["note_id"]]}))
+            assert err["details"] == {"required_scope": "delete", "profile": "alice"}
+        async with mcp_client(mcp_app, t["dele"], mode) as c:
+            out = data(await c.call_tool("delete_notes", {"note_ids": [added["note_id"]]}))
+            assert out["results"] == [{"note_id": added["note_id"], "status": "deleted"}]
+
+    actions = {(r["action"], (r["detail"] or "").split(" ")[0]) for r in store.audit_tail(20)}
+    assert {
+        ("update_notes", "via=mcp"),
+        ("cards_suspend", "via=mcp"),
+        ("move_cards", "via=mcp"),
+        ("create_deck", "via=mcp"),
+        ("delete_notes", "via=mcp"),
+    } <= actions
 
 
 async def test_trailing_slash_and_other_profile(mcp_app: FastAPI, store: Store) -> None:

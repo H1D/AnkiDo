@@ -27,7 +27,7 @@ from typing import Any
 from argon2 import PasswordHasher
 from argon2.exceptions import VerifyMismatchError
 
-SCOPES: tuple[str, ...] = ("read", "add", "review", "sync", "admin")
+SCOPES: tuple[str, ...] = ("read", "add", "review", "sync", "delete", "admin")
 TOKEN_PREFIX = "akd"
 ACCESS_PREFIX = "akda"
 REFRESH_PREFIX = "akdr"

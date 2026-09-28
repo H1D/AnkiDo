@@ -7,7 +7,6 @@ on:
 permissions:
   contents: write
   packages: write
-  id-token: write
 
 jobs:
   image:
@@ -39,22 +38,6 @@ jobs:
           labels: ${{ steps.meta.outputs.labels }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
-
-  pypi:
-    # Needs the `pypi` environment + trusted publisher configured on PyPI; until then this
-    # job fails without blocking the image or the GitHub release.
-    runs-on: ubuntu-latest
-    environment: pypi
-    continue-on-error: true
-    steps:
-      - uses: actions/checkout@v4
-      - uses: astral-sh/setup-uv@v6
-      - run: uv python install 3.12
-      - run: uv build
-      - name: Publish (trusted publishing; configure the `pypi` environment first)
-        uses: pypa/gh-action-pypi-publish@release/v1
-        with:
-          skip-existing: true
 
   github-release:
     runs-on: ubuntu-latest

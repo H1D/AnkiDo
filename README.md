@@ -239,7 +239,8 @@ semver and are recorded in [CHANGELOG.md](CHANGELOG.md).
 - [CONTRIBUTING.md](CONTRIBUTING.md), [SECURITY.md](SECURITY.md)
 
 Repository: `github.com/H1D/AnkiDo`. Image: `ghcr.io/h1d/ankido` (tags `latest`, `X.Y.Z`, `X.Y`,
-and immutable `sha-<short>`). PyPI: `ankido`.
+and immutable `sha-<short>`). Ankido is not on PyPI; without Docker, install it from Git
+([quickstart](docs/quickstart.md#without-docker)).
 
 ## License
 

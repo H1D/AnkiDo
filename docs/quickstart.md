@@ -140,9 +140,16 @@ Before exposing the port anywhere else, read [deploy.md](deploy.md).
 
 ## Without Docker
 
+Ankido is not published on PyPI; install a release tag straight from GitHub. Replace `vX.Y.Z`
+with a tag from the [releases page](https://github.com/H1D/AnkiDo/releases):
+
 ```sh
-uv tool install ankido      # or: pipx install ankido
+uv tool install git+https://github.com/H1D/AnkiDo@vX.Y.Z
+# or: pipx install git+https://github.com/H1D/AnkiDo@vX.Y.Z
 ```
+
+To update, run the same command with the new tag and `--force` (`uv tool install --force …`,
+`pipx install --force …`).
 
 Write `ankido.yaml` in the working directory (or point `ANKIDO_CONFIG` at it, or pass
 `--config`). Set `data_dir` to a directory the service user can write; nothing else needs root.

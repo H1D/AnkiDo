@@ -7,6 +7,11 @@ public contract; the AnkiConnect shim follows AnkiConnect's own dialect.
 
 ## [Unreleased]
 
+### Removed
+
+- PyPI publishing. It was never set up, so `ankido` was never on PyPI. Install without
+  Docker from the Git repository instead (`uv tool install git+https://github.com/H1D/AnkiDo@vX.Y.Z`).
+
 ## [0.2.0] - 2026-09-28
 
 ### Added
@@ -81,7 +86,7 @@ First release.
 - YAML configuration with strict validation; credentials from env files or
   `ANKIDO_PROFILE_<NAME>_USERNAME/_PASSWORD`.
 - Docker image `ghcr.io/h1d/ankido` for amd64 and arm64, non-root (uid 1000), healthcheck;
-  `compose.yaml` example; PyPI package `ankido`.
+  `compose.yaml` example.
 - Documentation: quickstart, API reference, AnkiConnect shim, client guide, deployment,
   schema-upgrade and full-sync policy, migration.
 

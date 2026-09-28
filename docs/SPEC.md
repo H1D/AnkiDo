@@ -218,4 +218,6 @@ mobile apps; running this as a hosted service.
    it in the README.
 2. Does the MCP mode ship in v1 (the base project has one) or slip to v1.1? *Decided: it ships
    in 0.2.0, always on, as described in §6.3.*
-3. Claim the name on PyPI, Docker Hub, and GHCR before the first release.
+3. Claim the name on PyPI, Docker Hub, and GHCR before the first release. *Decided: GHCR only.
+   Ankido is a service, not a library; it ships as an image, and bare-metal installs come
+   straight from the Git repository.*

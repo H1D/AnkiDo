@@ -342,6 +342,8 @@ Response:
 | `q`, `a` | Question and answer, rendered by Anki, then cleaned. In `text` mode: plain text with `**bold**`, `_italic_`, cloze as `[...]` or `[hint]` on the question and `[answer]` on the answer, `[img:name]` for images, `\n` for line breaks. In `html` mode: Anki's HTML with `<style>`, `<script>`, `[anki:play:...]` and `[sound:...]` removed; the answer side has the repeated question above `<hr id=answer>` cut off. |
 | `media` | Filenames referenced by the card (sounds, images, audio/video sources). Fetch each from `/media/{filename}`. External `http(s)` and `data:` sources are not listed. |
 | `interval_days`, `due`, `queue`, `type` | Scheduling state; same meaning as in the reviews response. |
+| `type_answer` | Only on "type in the answer" cards (a template with `{{type:Field}}`): the text Anki compares typed input against. Sound tags and HTML are removed, line breaks become spaces, the result is NFC-normalized and trimmed, as Anki's `compare_answer` prepares it. For `{{type:cloze:Field}}` it is this card's cloze answer (several deletions with the same number are joined with `, `). Compare locally; nothing is sent back. |
+| `type_nc` | `true` when the template uses `{{type:nc:Field}}`: compare ignoring diacritics (strip combining marks from both strings after NFD). Absent otherwise. |
 | `deck_rank` | Index into `decks`: which of your requested decks the card came from. |
 | `kind` | `due`, `new` or `learning`. |
 | `next` | Anki's description of the next interval for again, hard, good, easy, in that order. Display only. |
@@ -350,6 +352,22 @@ Response:
 
 `fields=full` adds `model`, `template_ord`, `fields` (name to raw HTML), `tags`,
 `question_html`, `answer_html` (untouched), `css`, `reps`, `lapses`, `factor`, `mod`, `flags`.
+
+#### Type in the answer
+
+Anki leaves `{{type:Field}}` in the rendered card as a marker, `[[type:Field]]` (also
+`[[type:nc:Field]]`, `[[type:cloze:Field]]`), and Ankido keeps it in `q` and `a` in both render
+modes. Its position says where things go: on the question, the input box; on the answer, the
+comparison of what was typed with `type_answer`. Like Anki's desktop reviewer, Ankido only looks at
+the first marker on the question side:
+
+- Field has text: `q` and `a` keep the markers, `type_answer` (and `type_nc`) are set.
+- Field exists but there is nothing to type (empty field, or no cloze with this card's number):
+  the markers are removed from `q` and `a`, and neither key is present.
+- No such field in the note type: `q` and `a` are left as they are, and neither key is present.
+  Anki shows a warning in place of the marker here.
+
+`question_html` and `answer_html` are Anki's output and always contain the markers.
 
 ### Pagination
 

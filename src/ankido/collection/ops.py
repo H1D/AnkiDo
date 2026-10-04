@@ -10,6 +10,7 @@ import base64
 import json
 import re
 import time
+import unicodedata
 from dataclasses import dataclass, field
 from typing import Any, Literal, cast
 
@@ -741,6 +742,70 @@ def _render_queued(
     return out
 
 
+# Anki's template engine leaves {{type:Field}} as this marker; the desktop reviewer resolves it.
+_TYPE_ANSWER_RE = re.compile(r"\[\[type:(.+?)\]\]")
+# What Anki's compare_answer collapses to one space before turning `expected` into a text line.
+_TYPE_LINEBREAKS_RE = re.compile(r"(?:\n|<br\s*/?>|</?div>)+", re.I)
+
+
+@dataclass(frozen=True)
+class _TypeSpec:
+    field: str
+    cloze: bool
+    nc: bool
+
+
+def _parse_type_spec(spec: str) -> _TypeSpec:
+    """``[cloze:][nc:]Field`` (prefixes in either order) from a ``[[type:...]]`` marker."""
+    cloze = nc = False
+    while True:
+        if not cloze and spec.startswith("cloze:"):
+            cloze, spec = True, spec[len("cloze:") :]
+        elif not nc and spec.startswith("nc:"):
+            nc, spec = True, spec[len("nc:") :]
+        else:
+            return _TypeSpec(spec, cloze, nc)
+
+
+def _type_answer_text(col: Collection, value: str) -> str:
+    """The plain line Anki's ``compare_answer`` checks typed input against."""
+    text = col.media.strip_av_tags(value)
+    text = _TYPE_LINEBREAKS_RE.sub(" ", text)
+    # anki.utils.html_to_text_line needs anki.lang's global backend and keeps media filenames;
+    # compare_answer drops them, so call the collection's backend directly.
+    text = col._backend.html_to_text_line(  # pyright: ignore[reportPrivateUsage]
+        text=text, preserve_media_filenames=False
+    )
+    return unicodedata.normalize("NFC", text).strip()
+
+
+def _type_answer(
+    col: Collection, card: Card, note: Note, question_html: str
+) -> dict[str, Any] | None:
+    """Resolve the first ``[[type:...]]`` marker the way Anki's desktop reviewer does.
+
+    ``None``: no marker, or a field the note type lacks (leave the card alone). An empty dict:
+    nothing to type (empty field, no cloze with this card's number), so drop the markers.
+    Otherwise the payload keys to add.
+    """
+    m = _TYPE_ANSWER_RE.search(question_html)
+    if m is None:
+        return None
+    spec = _parse_type_spec(m.group(1))
+    if spec.field not in note:
+        return None
+    value = note[spec.field]
+    if spec.cloze:
+        value = col.extract_cloze_for_typing(value, card.ord + 1)
+    expected = _type_answer_text(col, value)
+    if not expected:
+        return {}
+    out: dict[str, Any] = {"type_answer": expected}
+    if spec.nc:
+        out["type_nc"] = True
+    return out
+
+
 def card_payload(
     col: Collection,
     card: Card,
@@ -749,14 +814,20 @@ def card_payload(
     render_mode: Literal["text", "html"] = "text",
 ) -> dict[str, Any]:
     ro = card.render_output(reload=False, browser=False)
-    rendered = render(ro.question_text, ro.answer_text, render_mode)
+    note = card.note()
+    typing = _type_answer(col, card, note, ro.question_text)
+    question_html, answer_html = ro.question_text, ro.answer_text
+    if typing == {}:
+        # Anki shows neither an input box nor a comparison when there is nothing to type.
+        question_html = _TYPE_ANSWER_RE.sub("", question_html)
+        answer_html = _TYPE_ANSWER_RE.sub("", answer_html)
+    rendered = render(question_html, answer_html, render_mode)
     # Rendering turns [sound:x] into [anki:play:...]; the filenames live in the av tags.
     media = list(rendered.media)
     for tag in (*ro.question_av_tags, *ro.answer_av_tags):
         name = getattr(tag, "filename", None)
         if isinstance(name, str) and name and name not in media:
             media.append(name)
-    note = card.note()
     out: dict[str, Any] = {
         "card_id": card.id,
         "note_id": note.id,
@@ -765,6 +836,7 @@ def card_payload(
         "a": rendered.answer,
         "media": media,
         **_card_schedule(col, card),
+        **(typing or {}),
     }
     if fields == "full":
         notetype = note.note_type()

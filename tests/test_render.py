@@ -127,3 +127,15 @@ def test_extract_media_unescapes_and_spans_chunks() -> None:
 )
 def test_normalize_headword(raw: str, expected: str) -> None:
     assert normalize_headword(raw) == expected
+
+
+@pytest.mark.parametrize("spec", ["Back", "nc:Back", "cloze:Text", "cloze:nc:Text"])
+def test_type_answer_marker_survives_both_modes(spec: str) -> None:
+    marker = f"[[type:{spec}]]"
+    q = f"het <b>huis</b>\n\n{marker}"
+    a = f"{q}\n\n<hr id=answer>\n\n<i>house</i><br>{marker}"
+    text = render(q, a, "text")
+    assert text.question == f"het **huis** {marker}"
+    assert text.answer == f"_house_\n{marker}"
+    html = render(q, a, "html")
+    assert html.question.endswith(marker) and html.answer.endswith(marker)

@@ -10,7 +10,8 @@ from pathlib import Path
 from typing import Any, Literal
 
 import pytest
-from anki.cards import CardId
+from anki.cards import Card, CardId
+from anki.collection import Collection
 
 from ankido.collection.media import MediaResolver
 from ankido.collection.ops import (
@@ -23,6 +24,7 @@ from ankido.collection.ops import (
     ReviewSpec,
     add_notes,
     answer_reviews,
+    card_payload,
     cards_info,
     cards_mod_time,
     create_deck,
@@ -895,3 +897,147 @@ def test_move_cards_create_deck_list_tags(
         session, resolver, [NoteUpdate(note_id=added[0]["note_id"], add_tags=["zeta", "Alpha"])]
     )
     assert list_tags(session) == ["Alpha", "zeta"]
+
+
+# ---- type in the answer ------------------------------------------------------------------
+
+
+def typing_cards(
+    col: Collection,
+    fields: dict[str, str],
+    *,
+    qfmt: str | None = None,
+    afmt: str | None = None,
+    cloze: bool = False,
+) -> list[Card]:
+    """Cards of a new note. Without templates: the stock "Basic (type in the answer)"."""
+    base = col.models.by_name("Cloze" if cloze else "Basic (type in the answer)")
+    assert base is not None
+    model = base
+    if qfmt is not None or afmt is not None:
+        model = col.models.copy(base, add=False)
+        model["name"] = f"typing {qfmt} {afmt}"
+        if qfmt is not None:
+            model["tmpls"][0]["qfmt"] = qfmt
+        if afmt is not None:
+            model["tmpls"][0]["afmt"] = afmt
+        col.models.add_dict(model)
+        found = col.models.by_name(model["name"])
+        assert found is not None
+        model = found
+    note = col.new_note(model)
+    for name, value in fields.items():
+        note[name] = value
+    deck_id = col.decks.id("Test")
+    assert deck_id is not None
+    col.add_note(note, deck_id)
+    return note.cards()
+
+
+CLOZE_TYPING_Q = "{{cloze:Text}}<br>{{type:cloze:Text}}"
+CLOZE_TYPING_A = "{{cloze:Text}}<br>{{type:cloze:Text}}"
+
+
+class TestTypeAnswer:
+    def test_basic_type_in_the_answer(self, session: Session) -> None:
+        col = session.require()
+        [card] = typing_cards(col, {"Front": "huis", "Back": "house"})
+        out = card_payload(col, card)
+        assert out["q"] == "huis [[type:Back]]" and out["a"] == "[[type:Back]]"
+        assert out["type_answer"] == "house" and "type_nc" not in out
+        full = card_payload(col, card, fields="full", render_mode="html")
+        assert full["type_answer"] == "house" and "type_nc" not in full
+        assert "[[type:Back]]" in full["q"] and "[[type:Back]]" in full["a"]
+
+    def test_nc_prefix(self, session: Session) -> None:
+        col = session.require()
+        [card] = typing_cards(
+            col,
+            {"Front": "koffie", "Back": "cafe\u0301"},
+            qfmt="{{Front}} {{type:nc:Back}}",
+            afmt="{{type:nc:Back}}",
+        )
+        out = card_payload(col, card)
+        assert out["q"] == "koffie [[type:nc:Back]]" and out["a"] == "[[type:nc:Back]]"
+        # NFC, as compare_answer normalises before diffing
+        assert out["type_answer"] == "caf\u00e9" and out["type_nc"] is True
+
+    def test_cloze_picks_this_cards_cloze(self, session: Session) -> None:
+        col = session.require()
+        cards = typing_cards(
+            col,
+            {"Text": "{{c1::Paris}} is in {{c2::France::country}} near {{c1::Lyon}}"},
+            qfmt=CLOZE_TYPING_Q,
+            afmt=CLOZE_TYPING_A,
+            cloze=True,
+        )
+        by_ord = {c.ord: card_payload(col, c) for c in cards}
+        assert by_ord[0]["type_answer"] == "Paris, Lyon"
+        assert by_ord[1]["type_answer"] == "France"
+        assert by_ord[1]["q"].endswith("\n[[type:cloze:Text]]")
+        assert "type_nc" not in by_ord[0]
+
+    @pytest.mark.parametrize("spec", ["cloze:nc:Text", "nc:cloze:Text"])
+    def test_cloze_and_nc_in_either_order(self, session: Session, spec: str) -> None:
+        col = session.require()
+        # Anki's template engine folds {{type:nc:cloze:...}} to [[type:Text]]; write the marker.
+        cards = typing_cards(
+            col,
+            {"Text": "{{c1::Paris}} is in {{c2::France}}"},
+            qfmt=f"{{{{cloze:Text}}}} [[type:{spec}]]",
+            afmt=f"{{{{cloze:Text}}}} [[type:{spec}]]",
+            cloze=True,
+        )
+        second = next(c for c in cards if c.ord == 1)
+        out = card_payload(col, second)
+        assert out["type_answer"] == "France" and out["type_nc"] is True
+
+    def test_field_html_and_sound_reduced_to_one_line(self, session: Session) -> None:
+        col = session.require()
+        back = "<b>the</b>&nbsp;house[sound:house.mp3]<br><div>&amp; <img src=h.png>home</div>\n"
+        [card] = typing_cards(col, {"Front": "huis", "Back": back})
+        assert card_payload(col, card)["type_answer"] == "the house & home"
+
+    @pytest.mark.parametrize("back", ["", "[sound:only.mp3]", "<br>"])
+    def test_empty_field_drops_markers(self, session: Session, back: str) -> None:
+        col = session.require()
+        [card] = typing_cards(col, {"Front": "huis", "Back": back})
+        for fields in ("compact", "full"):
+            out = card_payload(col, card, fields=fields)
+            assert out["q"] == "huis" and out["a"] == ""
+            assert "type_answer" not in out and "type_nc" not in out
+
+    def test_missing_cloze_drops_markers(self, session: Session) -> None:
+        col = session.require()
+        cards = typing_cards(
+            col,
+            {"Text": "{{c1::Paris}} is in {{c2::France}}"},
+            qfmt=CLOZE_TYPING_Q,
+            afmt=CLOZE_TYPING_A,
+            cloze=True,
+        )
+        note = cards[0].note()
+        note["Text"] = "{{c1::Paris}} is in France"
+        col.update_note(note)
+        stale = next(c for c in cards if c.ord == 1)
+        stale.load()
+        out = card_payload(col, stale)
+        assert "[[type:" not in out["q"] and "[[type:" not in out["a"]
+        assert "type_answer" not in out
+
+    def test_unknown_field_left_alone(self, session: Session) -> None:
+        col = session.require()
+        # Anki refuses {{type:Nope}} in a template, so the marker can only come in literally.
+        [card] = typing_cards(
+            col, {"Front": "huis", "Back": "house"}, qfmt="{{Front}} [[type:Nope]]"
+        )
+        out = card_payload(col, card)
+        assert out["q"] == "huis [[type:Nope]]"
+        assert "type_answer" not in out and "type_nc" not in out
+
+    def test_no_marker_no_keys(self, session: Session) -> None:
+        col = session.require()
+        [card] = typing_cards(col, {"Front": "huis", "Back": "house"}, qfmt="{{Front}}")
+        for fields in ("compact", "full"):
+            out = card_payload(col, card, fields=fields)
+            assert "type_answer" not in out and "type_nc" not in out

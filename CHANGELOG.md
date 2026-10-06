@@ -7,6 +7,14 @@ public contract; the AnkiConnect shim follows AnkiConnect's own dialect.
 
 ## [Unreleased]
 
+### Added
+
+- "Type in the answer" cards: queue cards whose template has `{{type:Field}}` carry
+  `type_answer`, the expected text prepared the way Anki's `compare_answer` prepares it (cloze
+  answers for `{{type:cloze:Field}}`), and `type_nc: true` for `{{type:nc:Field}}`. A client can
+  check typed answers offline. The `[[type:...]]` marker stays in `q` and `a` to mark where the
+  input box and the comparison go; it is removed when there is nothing to type.
+
 ## [0.3.0] - 2026-09-28
 
 ### Added

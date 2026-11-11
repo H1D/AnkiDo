@@ -115,7 +115,7 @@ AnkiConnect dialect is a compatibility shim only and gets no new features.
   - Per-review result: `applied|duplicate|rejected(reason)`, plus the new `due`/`interval`.
 - **`GET /v1/p/{profile}/queue`** — the card queue.
   - Query: `decks=` (ordered list; order is priority), `kinds=due,new,learning`, `limit=`,
-    `max_new_per_day=`, `cursor=`, `fields=compact|full`, `render=html|text`.
+    `max_new_per_day=`, `search=` (Anki search), `cursor=`, `fields=compact|full`, `render=html|text`.
   - `compact` is the MCU payload: `card_id`, deck priority, and question/answer **ready to draw** —
     the server strips `<style>` and `[anki:play:…]`, expands cloze, and leaves minimal markup; media
     comes as a separate list of references. The goal is that clients carry no HTML-cleanup layer.

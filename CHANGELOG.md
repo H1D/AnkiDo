@@ -7,6 +7,8 @@ public contract; the AnkiConnect shim follows AnkiConnect's own dialect.
 
 ## [Unreleased]
 
+## [0.4.0] - 2026-11-11
+
 ### Added
 
 - "Type in the answer" cards: queue cards whose template has `{{type:Field}}` carry
@@ -138,7 +140,8 @@ First release.
 - Documentation: quickstart, API reference, AnkiConnect shim, client guide, deployment,
   schema-upgrade and full-sync policy, migration.
 
-[Unreleased]: https://github.com/H1D/AnkiDo/compare/v0.3.0...HEAD
+[Unreleased]: https://github.com/H1D/AnkiDo/compare/v0.4.0...HEAD
+[0.4.0]: https://github.com/H1D/AnkiDo/compare/v0.3.0...v0.4.0
 [0.3.0]: https://github.com/H1D/AnkiDo/compare/v0.2.0...v0.3.0
 [0.2.0]: https://github.com/H1D/AnkiDo/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/H1D/AnkiDo/releases/tag/v0.1.0

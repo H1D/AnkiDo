@@ -6,6 +6,7 @@ from __future__ import annotations
 import base64
 import math
 import time
+from dataclasses import replace
 from pathlib import Path
 from typing import Any, Literal
 
@@ -589,6 +590,42 @@ class TestQueue:
         result = get_queue(session, QueueRequest(decks=["A", "B"], limit=1))
         assert [c["deck"] for c in result.cards] == ["A"]
         assert result.counts == {"new": 5, "learning": 0, "due": 0, "returned": 1}
+
+    def test_search_drops_cards_from_page_and_counts(
+        self, session: Session, store: Store, resolver: MediaResolver
+    ) -> None:
+        add_basic(
+            session, store, resolver, 3, deck="A", prefix="x", model="Basic (and reversed card)"
+        )
+        add_basic(session, store, resolver, 2, deck="B", prefix="b")
+        req = QueueRequest(decks=["A", "B"], limit=1, search='-note:"Basic (and reversed card)"')
+        result = get_queue(session, req)
+        assert [c["deck"] for c in result.cards] == ["B"]
+        assert result.counts == {"new": 2, "learning": 0, "due": 0, "returned": 1}
+        rest = get_queue(session, replace(req, cursor=result.next_cursor))
+        assert [c["deck"] for c in rest.cards] == ["B"] and rest.next_cursor is None
+
+    def test_search_by_card_template(
+        self, session: Session, store: Store, resolver: MediaResolver
+    ) -> None:
+        add_basic(session, store, resolver, 2, prefix="x", model="Basic (and reversed card)")
+        result = get_queue(session, QueueRequest(search='-card:"Card 2"'))
+        assert result.counts["new"] == 2
+        assert all(c["q"].startswith("x ") for c in result.cards)
+
+    def test_search_is_part_of_the_cursor(
+        self, session: Session, store: Store, resolver: MediaResolver
+    ) -> None:
+        add_basic(session, store, resolver, 3, prefix="q")
+        cursor = get_queue(session, QueueRequest(limit=1)).next_cursor
+        with pytest.raises(ApiError) as ei:
+            get_queue(session, QueueRequest(limit=1, cursor=cursor, search="q"))
+        assert ei.value.code == "invalid_cursor"
+
+    def test_invalid_search(self, session: Session) -> None:
+        with pytest.raises(ApiError) as ei:
+            get_queue(session, QueueRequest(search='note:"unclosed'))
+        assert ei.value.code == "invalid_search"
 
     def test_deck_not_found(self, session: Session) -> None:
         with pytest.raises(ApiError) as ei:

@@ -366,6 +366,22 @@ def test_reviews_apply_and_replay_is_duplicate(
     assert tail[2]["count"] == 1 and tail[1]["count"] == 0
 
 
+def test_queue_and_exchange_search(
+    client: TestClient, alice_token: str, seed_notes: Seeder
+) -> None:
+    seed_notes(2, model="Basic (and reversed card)", prefix="r")
+    seed_notes(1)
+    search = '-note:"Basic (and reversed card)"'
+    q = client.get("/v1/p/alice/queue", params={"search": search}, headers=auth(alice_token))
+    assert q.status_code == 200, q.text
+    assert q.json()["counts"]["new"] == 1 and len(q.json()["cards"]) == 1
+    body = {"want": {"search": search}, "sync": "never"}
+    ex = client.post("/v1/p/alice/exchange", json=body, headers=auth(alice_token)).json()
+    assert ex["counts"]["new"] == 1
+    bad = client.get("/v1/p/alice/queue?search=note:%22x", headers=auth(alice_token))
+    assert_error(bad, 400, "invalid_search")
+
+
 def test_exchange_applies_reviews_and_returns_next_batch(
     client: TestClient, alice_token: str, seed_notes: Seeder
 ) -> None:

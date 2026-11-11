@@ -302,6 +302,7 @@ Scope `read`. Rate bucket `read`. Returns cards to study.
 | `kinds` | `due,new,learning` | Which queues to include. |
 | `limit` | `60` | Cards per page, 1 to 1000. |
 | `max_new_per_day` | none | Cap on new cards in this fetch (across its pages). It is a per-request budget, not tracked over the day; Anki's own per-deck daily limit still applies underneath. |
+| `search` | none | [Anki search](https://docs.ankiweb.net/searching.html). Only matching cards are returned and counted, for example `-note:"Image Occlusion Enhanced"` or `-card:Reverse`. Up to 1000 characters; a bad search gives `400 invalid_search`. |
 | `cursor` | none | `next_cursor` from a previous page. |
 | `fields` | `compact` | `compact` or `full` (see below). |
 | `render` | `text` | `text` or `html`. |
@@ -347,7 +348,7 @@ Response:
 | `deck_rank` | Index into `decks`: which of your requested decks the card came from. |
 | `kind` | `due`, `new` or `learning`. |
 | `next` | Anki's description of the next interval for again, hard, good, easy, in that order. Display only. |
-| `counts` | Totals for the selected decks as Anki reports them, before `kinds` filtering, plus `returned`. |
+| `counts` | Totals for the selected decks as Anki reports them, before `kinds` filtering, plus `returned`. With `search`, only the matching cards in Anki's queue are counted. Anki applies the deck's daily limits before the search, so a non-matching card still uses its deck's limit. |
 | `decks` | The decks actually queried, in priority order. |
 
 `fields=full` adds `model`, `template_ord`, `fields` (name to raw HTML), `tags`,
@@ -372,7 +373,7 @@ the first marker on the question side:
 ### Pagination
 
 `next_cursor` is `null` on the last page. The cursor encodes an offset and a signature of
-`decks`, `kinds`, `max_new_per_day`, `fields` and `render`; using it with different parameters
+`decks`, `kinds`, `max_new_per_day`, `search`, `fields` and `render`; using it with different parameters
 yields `400 invalid_cursor` (retryable: start over without a cursor). Grading cards between pages
 changes what is at each offset, so after submitting reviews, fetch page one again.
 

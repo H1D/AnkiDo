@@ -620,13 +620,21 @@ class QueueRequest:
     kinds: list[str] = field(default_factory=lambda: list(KINDS))
     limit: int = DEFAULT_QUEUE_LIMIT
     max_new_per_day: int | None = None
+    search: str | None = None
     cursor: str | None = None
     fields: Literal["compact", "full"] = "compact"
     render: Literal["text", "html"] = "text"
 
     def signature(self) -> str:
         return json.dumps(
-            [self.decks, sorted(self.kinds), self.max_new_per_day, self.fields, self.render]
+            [
+                self.decks,
+                sorted(self.kinds),
+                self.max_new_per_day,
+                self.search,
+                self.fields,
+                self.render,
+            ]
         )
 
 
@@ -664,6 +672,10 @@ def _decode_cursor(cursor: str, sig: str) -> int:
         ) from exc
 
 
+# Anki builds the whole queue anyway; this only asks it to return every card.
+_WHOLE_QUEUE = 1_000_000
+
+
 def _select_deck(col: Collection, did: DeckId) -> None:
     if col.decks.get_current_id() != did:
         col.decks.select(did)
@@ -695,23 +707,29 @@ def get_queue(session: Session, req: QueueRequest) -> QueueResult:
     wanted = offset + limit + 1  # one extra to know whether a next page exists
 
     decks = _resolve_decks(col, req.decks)
+    # Cards outside the search take no page slots and no counts. Anki has no search in its
+    # queue builder, so a search reads each deck's whole queue and counts what passes.
+    allowed = set(find_cards(col, req.search)) if req.search else None
     original_deck = col.decks.get_current_id()
     entries: list[tuple[int, str, QueuedCards.QueuedCard]] = []  # (deck_rank, deck, qc)
     counts_total = {"new": 0, "learning": 0, "due": 0}
     new_budget = req.max_new_per_day
     for rank, (name, did) in enumerate(decks):
         _select_deck(col, did)
-        # Once the page is full, fetch_limit=0 still counts the remaining decks without cards.
+        # Without a search, fetch_limit=0 once the page is full still counts the later decks.
         need = max(wanted - len(entries), 0)
-        queued = _sched(col).get_queued_cards(fetch_limit=need)
-        counts_total["new"] += queued.new_count
-        counts_total["learning"] += queued.learning_count
-        counts_total["due"] += queued.review_count
-        if need == 0:
-            continue
+        queued = _sched(col).get_queued_cards(fetch_limit=need if allowed is None else _WHOLE_QUEUE)
+        if allowed is None:
+            counts_total["new"] += queued.new_count
+            counts_total["learning"] += queued.learning_count
+            counts_total["due"] += queued.review_count
         for qc in queued.cards:
             kind = _QUEUE_KIND[qc.queue]
-            if kind not in req.kinds:
+            if allowed is not None:
+                if qc.card.id not in allowed:
+                    continue
+                counts_total[kind] += 1
+            if len(entries) >= wanted or kind not in req.kinds:
                 continue
             if kind == "new" and new_budget is not None:
                 if new_budget <= 0:

@@ -124,13 +124,17 @@ yourself. If you need Anki's HTML and CSS, use `render=html` or `fields=full`.
 ## Pagination
 
 `GET /queue` returns at most `limit` cards (up to 1000) and a `next_cursor`. Pass it back as
-`cursor=` with the same `decks`, `kinds`, `max_new_per_day`, `fields` and `render`; a mismatch
+`cursor=` with the same `decks`, `kinds`, `max_new_per_day`, `search`, `fields` and `render`; a mismatch
 gives `400 invalid_cursor`, which is retryable in the sense that fetching the first page again
 fixes it. The cursor is an offset into the current queue: after you grade cards, the queue shifts,
 so start from the first page again instead of continuing.
 
 `max_new_per_day` caps new cards in one fetch (across its pages). It does not remember what you
 fetched earlier today; Anki's per-deck daily limit still applies underneath.
+
+`search` keeps cards your client cannot show out of the queue and its counts, for example
+`search=-note:"Image Occlusion Enhanced"`. It uses Anki's search syntax, so `note:` filters by note
+type and `card:` by card template.
 
 ## `ETag` and `If-None-Match`
 

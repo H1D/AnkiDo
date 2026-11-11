@@ -290,6 +290,10 @@ def build_server(sup: Supervisor) -> MCPServer:
             list[Literal["due", "new", "learning"]], Field(description="empty = all kinds")
         ] = [],  # noqa: B006
         limit: Annotated[int, Field(ge=1, le=200)] = 20,
+        search: Annotated[
+            str | None,
+            Field(description='Anki search; only matching cards, e.g. -note:"Image Occlusion"'),
+        ] = None,
         cursor: Annotated[str | None, Field(description="next_cursor from a previous call")] = None,
     ) -> dict[str, Any]:
         """The cards to study now, in Anki's order. Each card has the question (q), the answer
@@ -299,6 +303,7 @@ def build_server(sup: Supervisor) -> MCPServer:
             decks=decks,
             kinds=list(kinds) or list(ops.KINDS),
             limit=limit,
+            search=search or None,
             cursor=cursor,
             fields="compact",
             render="text",

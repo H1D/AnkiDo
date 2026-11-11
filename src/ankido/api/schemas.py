@@ -68,6 +68,7 @@ class WantIn(BaseModel):
     kinds: list[str] = Field(default_factory=lambda: list(KINDS))
     limit: int = Field(default=60, ge=1, le=1000)
     max_new_per_day: int | None = Field(default=None, ge=0)
+    search: str | None = Field(default=None, max_length=1000)
     fields: Literal["compact", "full"] = "compact"
     render: Literal["text", "html"] = "text"
 

@@ -701,12 +701,14 @@ def get_queue(session: Session, req: QueueRequest) -> QueueResult:
     new_budget = req.max_new_per_day
     for rank, (name, did) in enumerate(decks):
         _select_deck(col, did)
-        # fetch_limit of 0 would mean "just counts"; ask for what is still needed.
-        need = max(wanted - len(entries), 1)
+        # Once the page is full, fetch_limit=0 still counts the remaining decks without cards.
+        need = max(wanted - len(entries), 0)
         queued = _sched(col).get_queued_cards(fetch_limit=need)
         counts_total["new"] += queued.new_count
         counts_total["learning"] += queued.learning_count
         counts_total["due"] += queued.review_count
+        if need == 0:
+            continue
         for qc in queued.cards:
             kind = _QUEUE_KIND[qc.queue]
             if kind not in req.kinds:
@@ -716,8 +718,6 @@ def get_queue(session: Session, req: QueueRequest) -> QueueResult:
                     continue
                 new_budget -= 1
             entries.append((rank, name, qc))
-        if len(entries) >= wanted:
-            break
 
     page = entries[offset : offset + limit]
     has_more = len(entries) > offset + limit

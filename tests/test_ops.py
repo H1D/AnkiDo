@@ -581,6 +581,15 @@ class TestQueue:
         # all top-level decks when none given, in Anki's name order
         assert get_queue(session, QueueRequest()).decks == ["A", "B"]
 
+    def test_counts_cover_decks_after_a_full_page(
+        self, session: Session, store: Store, resolver: MediaResolver
+    ) -> None:
+        add_basic(session, store, resolver, 3, deck="A", prefix="a")
+        add_basic(session, store, resolver, 2, deck="B", prefix="b")
+        result = get_queue(session, QueueRequest(decks=["A", "B"], limit=1))
+        assert [c["deck"] for c in result.cards] == ["A"]
+        assert result.counts == {"new": 5, "learning": 0, "due": 0, "returned": 1}
+
     def test_deck_not_found(self, session: Session) -> None:
         with pytest.raises(ApiError) as ei:
             get_queue(session, QueueRequest(decks=["Nope"]))

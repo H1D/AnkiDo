@@ -15,6 +15,12 @@ public contract; the AnkiConnect shim follows AnkiConnect's own dialect.
   check typed answers offline. The `[[type:...]]` marker stays in `q` and `a` to mark where the
   input box and the comparison go; it is removed when there is nothing to type.
 
+### Fixed
+
+- Queue `counts` (`GET /queue`, `POST /exchange`, MCP `get_queue`) cover every requested deck.
+  They used to stop at the deck that filled the page, so with several decks and a small `limit`
+  the later decks were missing from `new`, `learning` and `due`.
+
 ## [0.3.0] - 2026-09-28
 
 ### Added

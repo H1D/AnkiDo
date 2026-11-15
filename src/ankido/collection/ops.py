@@ -631,7 +631,7 @@ class QueueRequest:
                 self.decks,
                 sorted(self.kinds),
                 self.max_new_per_day,
-                self.search,
+                self.search or None,
                 self.fields,
                 self.render,
             ]
@@ -1059,14 +1059,14 @@ def profile_status(session: Session) -> dict[str, Any]:
 def find_cards(col: Collection, query: str) -> list[int]:
     try:
         return [int(c) for c in col.find_cards(query)]
-    except SearchError as exc:
+    except (SearchError, InvalidInput) as exc:  # bad regex raises InvalidInput
         raise ApiError(f"invalid search: {exc}", code="invalid_search") from exc
 
 
 def find_notes(col: Collection, query: str) -> list[int]:
     try:
         return [int(n) for n in col.find_notes(query)]
-    except SearchError as exc:
+    except (SearchError, InvalidInput) as exc:
         raise ApiError(f"invalid search: {exc}", code="invalid_search") from exc
 
 

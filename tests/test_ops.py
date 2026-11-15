@@ -627,6 +627,21 @@ class TestQueue:
             get_queue(session, QueueRequest(search='note:"unclosed'))
         assert ei.value.code == "invalid_search"
 
+    def test_invalid_regex_search(
+        self, session: Session, store: Store, resolver: MediaResolver
+    ) -> None:
+        add_basic(session, store, resolver, 1)  # the regex is compiled on the first row
+        with pytest.raises(ApiError) as ei:
+            get_queue(session, QueueRequest(search="re:["))
+        assert ei.value.code == "invalid_search"
+
+    def test_empty_search_cursor_matches_no_search(
+        self, session: Session, store: Store, resolver: MediaResolver
+    ) -> None:
+        add_basic(session, store, resolver, 3)
+        cursor = get_queue(session, QueueRequest(limit=1, search="")).next_cursor
+        assert get_queue(session, QueueRequest(limit=1, cursor=cursor)).cards
+
     def test_deck_not_found(self, session: Session) -> None:
         with pytest.raises(ApiError) as ei:
             get_queue(session, QueueRequest(decks=["Nope"]))

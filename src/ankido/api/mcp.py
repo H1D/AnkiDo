@@ -292,7 +292,10 @@ def build_server(sup: Supervisor) -> MCPServer:
         limit: Annotated[int, Field(ge=1, le=200)] = 20,
         search: Annotated[
             str | None,
-            Field(description='Anki search; only matching cards, e.g. -note:"Image Occlusion"'),
+            Field(
+                max_length=1000,
+                description='Anki search; only matching cards, e.g. -note:"Image Occlusion"',
+            ),
         ] = None,
         cursor: Annotated[str | None, Field(description="next_cursor from a previous call")] = None,
     ) -> dict[str, Any]:

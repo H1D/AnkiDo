@@ -287,6 +287,7 @@ def _queue_request(want: WantIn, cursor: str | None) -> ops.QueueRequest:
         kinds=want.kinds,
         limit=want.limit,
         max_new_per_day=want.max_new_per_day,
+        search=want.search,
         cursor=cursor,
         fields=want.fields,
         render=want.render,
@@ -301,6 +302,7 @@ def get_queue(
     kinds: list[str] = Query(default=[]),
     limit: int = Query(default=60, ge=1, le=1000),
     max_new_per_day: int | None = Query(default=None, ge=0),
+    search: str | None = Query(default=None, max_length=1000),
     cursor: str | None = None,
     fields: str = Query(default="compact", pattern="^(compact|full)$"),
     render: str = Query(default="text", pattern="^(text|html)$"),
@@ -311,6 +313,7 @@ def get_queue(
         kinds=_split_csv(kinds) or list(ops.KINDS),
         limit=limit,
         max_new_per_day=max_new_per_day,
+        search=search or None,
         fields=fields,  # type: ignore[arg-type]
         render=render,  # type: ignore[arg-type]
     )

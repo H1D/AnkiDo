@@ -7,6 +7,8 @@ public contract; the AnkiConnect shim follows AnkiConnect's own dialect.
 
 ## [Unreleased]
 
+## [0.4.0] - 2026-11-11
+
 ### Added
 
 - "Type in the answer" cards: queue cards whose template has `{{type:Field}}` carry
@@ -14,6 +16,17 @@ public contract; the AnkiConnect shim follows AnkiConnect's own dialect.
   answers for `{{type:cloze:Field}}`), and `type_nc: true` for `{{type:nc:Field}}`. A client can
   check typed answers offline. The `[[type:...]]` marker stays in `q` and `a` to mark where the
   input box and the comparison go; it is removed when there is nothing to type.
+- Queue filter: `search` (Anki search syntax) on `GET /queue`, `want` in `POST /exchange` and MCP
+  `get_queue`. Cards that do not match take no page slots and are left out of `counts`, so a client
+  can skip note types or card templates it cannot show (`-note:"Image Occlusion Enhanced"`,
+  `-card:Reverse`). Anki applies deck limits before the search: a non-matching card still uses its
+  deck's daily limit.
+
+### Fixed
+
+- Queue `counts` (`GET /queue`, `POST /exchange`, MCP `get_queue`) cover every requested deck.
+  They used to stop at the deck that filled the page, so with several decks and a small `limit`
+  the later decks were missing from `new`, `learning` and `due`.
 
 ## [0.3.0] - 2026-09-28
 
@@ -127,7 +140,8 @@ First release.
 - Documentation: quickstart, API reference, AnkiConnect shim, client guide, deployment,
   schema-upgrade and full-sync policy, migration.
 
-[Unreleased]: https://github.com/H1D/AnkiDo/compare/v0.3.0...HEAD
+[Unreleased]: https://github.com/H1D/AnkiDo/compare/v0.4.0...HEAD
+[0.4.0]: https://github.com/H1D/AnkiDo/compare/v0.3.0...v0.4.0
 [0.3.0]: https://github.com/H1D/AnkiDo/compare/v0.2.0...v0.3.0
 [0.2.0]: https://github.com/H1D/AnkiDo/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/H1D/AnkiDo/releases/tag/v0.1.0

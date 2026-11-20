@@ -323,6 +323,7 @@ Response:
       "q": "het huis",
       "a": "house",
       "media": ["huis.mp3"],
+      "q_sounds": ["huis.mp3"],
       "interval_days": 4,
       "due": 1758931200,
       "queue": "review",
@@ -343,6 +344,7 @@ Response:
 | `q`, `a` | Question and answer, rendered by Anki, then cleaned. In `text` mode: plain text with `**bold**`, `_italic_`, cloze as `[...]` or `[hint]` on the question and `[answer]` on the answer, `[img:name]` for images, `\n` for line breaks. In `html` mode: Anki's HTML with `<style>`, `<script>`, `[anki:play:...]` and `[sound:...]` removed; the answer side has the repeated question above `<hr id=answer>` cut off. |
 | `media` | Filenames referenced by the card (sounds, images, audio/video sources). Fetch each from `/media/{filename}`. External `http(s)` and `data:` sources are not listed. |
 | `interval_days`, `due`, `queue`, `type` | Scheduling state; same meaning as in the reviews response. |
+| `q_sounds`, `a_sounds` | Sound files the question side and the answer side play, in play order, as Anki's own reviewer would: a sound in `{{FrontSide}}` belongs to the question only. Each name is also in `media`. A side without sounds has no key. TTS tags have no file and are left out. |
 | `type_answer` | Only on "type in the answer" cards (a template with `{{type:Field}}`): the text Anki compares typed input against. Sound tags and HTML are removed, line breaks become spaces, the result is NFC-normalized and trimmed, as Anki's `compare_answer` prepares it. For `{{type:cloze:Field}}` it is this card's cloze answer (several deletions with the same number are joined with `, `). Compare locally; nothing is sent back. |
 | `type_nc` | `true` when the template uses `{{type:nc:Field}}`: compare ignoring diacritics (strip combining marks from both strings after NFD). Absent otherwise. |
 | `deck_rank` | Index into `decks`: which of your requested decks the card came from. |

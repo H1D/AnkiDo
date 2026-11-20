@@ -7,6 +7,13 @@ public contract; the AnkiConnect shim follows AnkiConnect's own dialect.
 
 ## [Unreleased]
 
+### Added
+
+- Queue cards say which side plays which sound: `q_sounds` and `a_sounds` list the sound files of
+  the question and of the answer, in play order. `q` and `a` are unchanged and the names are still
+  in `media`, so existing clients see no difference. A client with a speaker no longer has to
+  guess the side.
+
 ## [0.4.0] - 2026-11-11
 
 ### Added

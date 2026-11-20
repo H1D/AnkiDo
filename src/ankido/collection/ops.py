@@ -11,6 +11,7 @@ import json
 import re
 import time
 import unicodedata
+from collections.abc import Sequence
 from dataclasses import dataclass, field
 from typing import Any, Literal, cast
 
@@ -824,6 +825,12 @@ def _type_answer(
     return out
 
 
+def _sound_names(av_tags: Sequence[object]) -> list[str]:
+    """Files one card side plays, in play order. TTS tags have no file and are left out."""
+    names = (getattr(tag, "filename", None) for tag in av_tags)
+    return [name for name in names if isinstance(name, str) and name]
+
+
 def card_payload(
     col: Collection,
     card: Card,
@@ -841,11 +848,10 @@ def card_payload(
         answer_html = _TYPE_ANSWER_RE.sub("", answer_html)
     rendered = render(question_html, answer_html, render_mode)
     # Rendering turns [sound:x] into [anki:play:...]; the filenames live in the av tags.
+    q_sounds = _sound_names(ro.question_av_tags)
+    a_sounds = _sound_names(ro.answer_av_tags)
     media = list(rendered.media)
-    for tag in (*ro.question_av_tags, *ro.answer_av_tags):
-        name = getattr(tag, "filename", None)
-        if isinstance(name, str) and name and name not in media:
-            media.append(name)
+    media += [name for name in dict.fromkeys(q_sounds + a_sounds) if name not in media]
     out: dict[str, Any] = {
         "card_id": card.id,
         "note_id": note.id,
@@ -853,6 +859,8 @@ def card_payload(
         "q": rendered.question,
         "a": rendered.answer,
         "media": media,
+        **({"q_sounds": q_sounds} if q_sounds else {}),
+        **({"a_sounds": a_sounds} if a_sounds else {}),
         **_card_schedule(col, card),
         **(typing or {}),
     }

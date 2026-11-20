@@ -702,6 +702,36 @@ class TestQueue:
         assert card["q"] == "het huis"
         assert set(card["media"]) == {"huis.mp3", "huis.png"}
 
+    def test_sounds_are_listed_per_side(
+        self, session: Session, store: Store, resolver: MediaResolver
+    ) -> None:
+        # Basic's answer template repeats {{FrontSide}}: its sound belongs to the question only.
+        one(
+            session,
+            store,
+            resolver,
+            {
+                "Front": "het huis[sound:huis.mp3]",
+                "Back": "house[sound:house.mp3][sound:zin.mp3][sound:house.mp3]",
+            },
+        )
+        one(session, store, resolver, {"Front": "de fiets", "Back": "bike[sound:fiets.mp3]"})
+        one(session, store, resolver, {"Front": "stil", "Back": '<img src="stil.png">quiet'})
+        cards = {c["q"]: c for c in get_queue(session, QueueRequest()).cards}
+
+        both = cards["het huis"]
+        assert both["q_sounds"] == ["huis.mp3"]
+        assert both["a_sounds"] == ["house.mp3", "zin.mp3", "house.mp3"]  # a repeat plays twice
+        assert both["media"] == ["huis.mp3", "house.mp3", "zin.mp3"]
+        assert "[sound" not in both["q"] + both["a"] and "anki:play" not in both["q"] + both["a"]
+
+        answer_only = cards["de fiets"]
+        assert "q_sounds" not in answer_only and answer_only["a_sounds"] == ["fiets.mp3"]
+
+        silent = cards["stil"]
+        assert "q_sounds" not in silent and "a_sounds" not in silent
+        assert silent["media"] == ["stil.png"]
+
 
 # ---- stats / decks / status / shim helpers ------------------------------------------------
 
